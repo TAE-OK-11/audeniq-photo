@@ -22,7 +22,7 @@ pub mod sanitize;
 
 pub use cover::{CoverReport, inspect_cover};
 pub use photo_core::{Deadline, Error as CodecError, Image, Limits, PixelFormat};
-pub use probe::{Probe, probe};
+pub use probe::{Probe, probe, verify_image};
 pub use report::{
     COLOR_FIELDS, PROVENANCE_FIELDS, color_report, metadata, metadata_file, provenance_fields,
 };

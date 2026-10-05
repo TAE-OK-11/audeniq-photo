@@ -43,3 +43,17 @@ pub fn probe(data: &[u8]) -> Result<Probe> {
         })
     })
 }
+
+/// Header probe plus a full decode (JPEG: luma plane only), so "decodable"
+/// is verified rather than inferred from headers. Corrupt pixel data is
+/// [`Error::Invalid`]; images beyond the pixel limit are [`Error::Limit`].
+pub fn verify_image(data: &[u8], deadline: &crate::Deadline) -> Result<Probe> {
+    let p = probe(data)?;
+    guard(|| {
+        let (w, h, _) = crate::intensity(data, deadline)?;
+        if (w as u32, h as u32) != (p.width, p.height) {
+            return Err(Error::Invalid("image dimensions disagree with the header"));
+        }
+        Ok(p)
+    })
+}

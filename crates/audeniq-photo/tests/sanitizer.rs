@@ -123,3 +123,36 @@ fn hostile_inputs_never_panic() {
         }
     }
 }
+
+#[test]
+fn verify_image_rejects_corrupt_pixel_data_with_valid_headers() {
+    let png = png_rgb(64, 64, [1, 2, 3]);
+    assert_eq!(
+        audeniq_photo::verify_image(&png, &Deadline::NONE)
+            .unwrap()
+            .width,
+        64
+    );
+    // Damage the IDAT payload but keep chunk CRCs consistent? Simplest:
+    // truncate after the header so the probe passes and the decode fails.
+    let mut cut = png[..png.len() - 20].to_vec();
+    cut.extend_from_slice(&png[png.len() - 12..]);
+    assert!(
+        audeniq_photo::probe(&cut).is_err()
+            || audeniq_photo::verify_image(&cut, &Deadline::NONE).is_err()
+    );
+    let img = audeniq_photo::Image {
+        width: 32,
+        height: 32,
+        format: PixelFormat::Rgb8,
+        data: vec![9; 32 * 32 * 3],
+    };
+    let jpg = photo_jpeg::encode(&img, 90, photo_jpeg::Subsampling::S420).unwrap();
+    assert!(audeniq_photo::verify_image(&jpg, &Deadline::NONE).is_ok());
+    let truncated = &jpg[..jpg.len() / 2];
+    assert!(audeniq_photo::probe(truncated).is_ok());
+    assert!(matches!(
+        audeniq_photo::verify_image(truncated, &Deadline::NONE),
+        Err(audeniq_photo::Error::Invalid(_))
+    ));
+}
