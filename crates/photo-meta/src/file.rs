@@ -55,7 +55,11 @@ impl Src {
 pub fn read_path(path: &Path) -> Result<Metadata> {
     let f = File::open(path).map_err(io)?;
     let len = f.metadata().map_err(io)?.len();
-    let mut s = Src { f, len, budget: MAX_READ };
+    let mut s = Src {
+        f,
+        len,
+        budget: MAX_READ,
+    };
     let head = s.read_upto(0, 64)?;
     let kind = FileType::detect(&head).ok_or(Error::Unsupported("unknown file type"))?;
     let compact = match kind {
@@ -89,7 +93,11 @@ fn chunks(s: &mut Src, start: u64, be: bool) -> Result<Vec<u8>> {
         let h = s.read_at(pos, 8)?;
         let id = [h[0], h[1], h[2], h[3]];
         let raw = [h[4], h[5], h[6], h[7]];
-        let mut size = u64::from(if be { u32::from_be_bytes(raw) } else { u32::from_le_bytes(raw) });
+        let mut size = u64::from(if be {
+            u32::from_be_bytes(raw)
+        } else {
+            u32::from_le_bytes(raw)
+        });
         if rf64 && &id == b"data" && size == 0xFFFF_FFFF {
             size = rf64_data.unwrap_or(s.len - pos - 8);
         }
@@ -164,7 +172,8 @@ fn mp4(s: &mut Src) -> Result<Vec<u8>> {
         if size < hdr {
             break;
         }
-        let keep = matches!(&kind, b"ftyp" | b"moov" | b"meta" | b"udta" | b"uuid") && size <= MAX_PART;
+        let keep =
+            matches!(&kind, b"ftyp" | b"moov" | b"meta" | b"udta" | b"uuid") && size <= MAX_PART;
         if keep {
             let body = s.read_at(pos + hdr, size - hdr)?;
             out.extend_from_slice(&((body.len() as u32 + 8).to_be_bytes()));

@@ -208,11 +208,18 @@ fn read_path_matches_in_memory_read_and_skips_payloads() {
     for f in &files {
         let a = read(&std::fs::read(f).unwrap()).unwrap();
         let b = photo_meta::read_path(f).unwrap();
-        let strip = |m: &photo_meta::Metadata| m.tags.iter().map(|t| (t.group.clone(), t.name.clone(), format!("{:?}", t.value))).collect::<Vec<_>>();
+        let strip = |m: &photo_meta::Metadata| {
+            m.tags
+                .iter()
+                .map(|t| (t.group.clone(), t.name.clone(), format!("{:?}", t.value)))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(strip(&a), strip(&b), "{}", f.display());
     }
     // A WAV with a LIST chunk after a large data chunk: tags still found.
-    let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data".to_vec();
+    let mut wav =
+        b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data"
+            .to_vec();
     let n: u32 = 8 * 1024 * 1024;
     wav.extend_from_slice(&n.to_le_bytes());
     wav.extend(std::iter::repeat_n(0u8, n as usize));
@@ -225,6 +232,12 @@ fn read_path_matches_in_memory_read_and_skips_payloads() {
     let p = dir.join("late_list.wav");
     std::fs::write(&p, &wav).unwrap();
     let m = photo_meta::read_path(&p).unwrap();
-    assert!(m.tags.iter().any(|t| t.name == "Software" && t.value == Value::Text("Suno".into())), "{:?}", m.tags);
+    assert!(
+        m.tags
+            .iter()
+            .any(|t| t.name == "Software" && t.value == Value::Text("Suno".into())),
+        "{:?}",
+        m.tags
+    );
     std::fs::remove_dir_all(&dir).ok();
 }

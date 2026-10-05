@@ -199,7 +199,10 @@ fn randomized_roundtrips() {
                     let n = (rnd() % 500) as usize;
                     let base = rnd() as u8;
                     for i in 0..n {
-                        data.push(base.wrapping_add((i % 7) as u8).wrapping_add((rnd() % 3) as u8));
+                        data.push(
+                            base.wrapping_add((i % 7) as u8)
+                                .wrapping_add((rnd() % 3) as u8),
+                        );
                     }
                 }
             }
@@ -208,13 +211,17 @@ fn randomized_roundtrips() {
         let level = Level::new((case % 10) as u8);
         let z = compress_zlib(&data, level);
         let mut out = Vec::new();
-        let r = inflate_zlib(&z, &mut out, data.len(), false).unwrap_or_else(|e| panic!("case {case} len {len} level {}: {e}", level.get()));
+        let r = inflate_zlib(&z, &mut out, data.len(), false)
+            .unwrap_or_else(|e| panic!("case {case} len {len} level {}: {e}", level.get()));
         assert!(r.complete && out == data, "case {case}");
-        if case % 16 == 0 {
-            if let Some(back) = python("import sys,zlib;sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))", &z) {
-                assert_eq!(back, data, "zlib disagrees on case {case}");
-                python_checked += 1;
-            }
+        if case % 16 == 0
+            && let Some(back) = python(
+                "import sys,zlib;sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))",
+                &z,
+            )
+        {
+            assert_eq!(back, data, "zlib disagrees on case {case}");
+            python_checked += 1;
         }
     }
     eprintln!("randomized: 160 cases, {python_checked} cross-checked with zlib");
