@@ -141,11 +141,14 @@ fn verify_image_rejects_corrupt_pixel_data_with_valid_headers() {
         audeniq_photo::probe(&cut).is_err()
             || audeniq_photo::verify_image(&cut, &Deadline::NONE).is_err()
     );
+    // Large enough that cutting the file in half lands in entropy data.
     let img = audeniq_photo::Image {
-        width: 32,
-        height: 32,
+        width: 256,
+        height: 256,
         format: PixelFormat::Rgb8,
-        data: vec![9; 32 * 32 * 3],
+        data: (0..256 * 256 * 3u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect(),
     };
     let jpg = photo_jpeg::encode(&img, 90, photo_jpeg::Subsampling::S420).unwrap();
     assert!(audeniq_photo::verify_image(&jpg, &Deadline::NONE).is_ok());
