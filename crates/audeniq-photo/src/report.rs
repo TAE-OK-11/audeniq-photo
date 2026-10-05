@@ -9,6 +9,12 @@ pub fn metadata(data: &[u8]) -> Result<Metadata> {
     guard(|| photo_meta::read(data).map_err(Error::from))
 }
 
+/// Read metadata from a file without loading audio sample data; suitable
+/// for multi-hundred-megabyte masters.
+pub fn metadata_file(path: &std::path::Path) -> Result<Metadata> {
+    guard(|| photo_meta::read_path(path).map_err(Error::from))
+}
+
 /// ExifTool's JSON number rule (`EscapeJSON`): integers up to 15 digits
 /// without leading zeros, optional fraction and exponent.
 fn looks_numeric(s: &str) -> bool {
@@ -154,7 +160,17 @@ mod tests {
         for s in ["0", "1", "-5", "65535", "2.2", "1e5", "123456789012345"] {
             assert!(looks_numeric(s), "{s}");
         }
-        for s in ["", "01", "1.", "8 8 8", "0000", "1234567890123456", "abc", "1e1234", "0x10"] {
+        for s in [
+            "",
+            "01",
+            "1.",
+            "8 8 8",
+            "0000",
+            "1234567890123456",
+            "abc",
+            "1e1234",
+            "0x10",
+        ] {
             assert!(!looks_numeric(s), "{s}");
         }
     }

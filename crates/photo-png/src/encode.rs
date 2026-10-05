@@ -34,7 +34,13 @@ pub struct Encoder<W: Write> {
 }
 
 impl<W: Write> Encoder<W> {
-    pub fn new(mut out: W, width: u32, height: u32, format: PixelFormat, level: Level) -> Result<Self> {
+    pub fn new(
+        mut out: W,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        level: Level,
+    ) -> Result<Self> {
         let color_type = match format {
             PixelFormat::Gray8 => 0,
             PixelFormat::GrayAlpha8 => 4,
@@ -108,7 +114,13 @@ impl<W: Write> Encoder<W> {
 
 /// Encode a whole image into a PNG byte vector.
 pub fn encode(img: &Image, level: Level) -> Result<Vec<u8>> {
-    let mut e = Encoder::new(Vec::with_capacity(img.data.len() / 2), img.width, img.height, img.format, level)?;
+    let mut e = Encoder::new(
+        Vec::with_capacity(img.data.len() / 2),
+        img.width,
+        img.height,
+        img.format,
+        level,
+    )?;
     for row in img.data.chunks_exact(img.stride()) {
         e.write_row(row)?;
     }
@@ -118,7 +130,11 @@ pub fn encode(img: &Image, level: Level) -> Result<Vec<u8>> {
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let p = i16::from(a) + i16::from(b) - i16::from(c);
-    let (pa, pb, pc) = ((p - i16::from(a)).abs(), (p - i16::from(b)).abs(), (p - i16::from(c)).abs());
+    let (pa, pb, pc) = (
+        (p - i16::from(a)).abs(),
+        (p - i16::from(b)).abs(),
+        (p - i16::from(c)).abs(),
+    );
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
@@ -157,7 +173,8 @@ fn apply_filter(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, out: &m
                 out[i] = row[i].wrapping_sub(p[i] >> 1);
             }
             for i in b..n {
-                out[i] = row[i].wrapping_sub(((u16::from(row[i - bpp]) + u16::from(p[i])) >> 1) as u8);
+                out[i] =
+                    row[i].wrapping_sub(((u16::from(row[i - bpp]) + u16::from(p[i])) >> 1) as u8);
             }
         }
         (_, Some(p)) => {

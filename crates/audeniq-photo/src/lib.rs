@@ -23,7 +23,7 @@ pub mod sanitize;
 pub use cover::{CoverReport, inspect_cover};
 pub use photo_core::{Deadline, Error as CodecError, Image, Limits, PixelFormat};
 pub use probe::{Probe, probe};
-pub use report::{color_report, metadata, provenance_fields};
+pub use report::{COLOR_FIELDS, PROVENANCE_FIELDS, color_report, metadata, metadata_file, provenance_fields};
 pub use sanitize::{Kind, decode_image, sanitize};
 
 use std::fmt;
@@ -118,12 +118,23 @@ pub(crate) fn intensity(data: &[u8], deadline: &Deadline) -> Result<(usize, usiz
 
 fn gray_source(img: &Image) -> std::borrow::Cow<'_, [u8]> {
     if img.format == PixelFormat::Cmyk8 {
-        std::borrow::Cow::Owned(img.data.chunks_exact(4).flat_map(|p| photo_core::cmyk_to_rgb([p[0], p[1], p[2], p[3]])).collect())
+        std::borrow::Cow::Owned(
+            img.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| photo_core::cmyk_to_rgb([p[0], p[1], p[2], p[3]]))
+                .collect(),
+        )
     } else {
         std::borrow::Cow::Borrowed(&img.data)
     }
 }
 
 fn gray_channels(img: &Image) -> usize {
-    if img.format == PixelFormat::Cmyk8 { 3 } else { img.format.channels() }
+    if img.format == PixelFormat::Cmyk8 {
+        3
+    } else {
+        img.format.channels()
+    }
 }

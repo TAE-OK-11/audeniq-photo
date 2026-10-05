@@ -8,7 +8,10 @@ pub(crate) struct Gf {
 pub(crate) fn gf() -> &'static Gf {
     static G: std::sync::OnceLock<Gf> = std::sync::OnceLock::new();
     G.get_or_init(|| {
-        let mut g = Gf { exp: [0; 512], log: [0; 256] };
+        let mut g = Gf {
+            exp: [0; 512],
+            log: [0; 256],
+        };
         let mut x: u16 = 1;
         for i in 0..255 {
             g.exp[i] = x as u8;
@@ -28,7 +31,11 @@ pub(crate) fn gf() -> &'static Gf {
 impl Gf {
     #[inline]
     fn mul(&self, a: u8, b: u8) -> u8 {
-        if a == 0 || b == 0 { 0 } else { self.exp[self.log[a as usize] as usize + self.log[b as usize] as usize] }
+        if a == 0 || b == 0 {
+            0
+        } else {
+            self.exp[self.log[a as usize] as usize + self.log[b as usize] as usize]
+        }
     }
     #[inline]
     fn inv(&self, a: u8) -> u8 {

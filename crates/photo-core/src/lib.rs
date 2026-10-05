@@ -148,7 +148,12 @@ impl Image {
     /// Alpha is dropped (as Pillow's `convert("RGB")` does) and CMYK uses
     /// the naive `(255 - c)(255 - k) / 255` transform when no profile applies.
     pub fn into_rgb8(self) -> Image {
-        let Image { width, height, format, mut data } = self;
+        let Image {
+            width,
+            height,
+            format,
+            mut data,
+        } = self;
         let pixels = width as usize * height as usize;
         match format {
             PixelFormat::Rgb8 => {}
@@ -175,7 +180,12 @@ impl Image {
                 data = out;
             }
         }
-        Image { width, height, format: PixelFormat::Rgb8, data }
+        Image {
+            width,
+            height,
+            format: PixelFormat::Rgb8,
+            data,
+        }
     }
 }
 
@@ -205,7 +215,10 @@ impl<'a> Bytes<'a> {
         Bytes { data, pos: 0 }
     }
     pub fn at(data: &'a [u8], pos: usize) -> Self {
-        Bytes { data, pos: pos.min(data.len()) }
+        Bytes {
+            data,
+            pos: pos.min(data.len()),
+        }
     }
     pub fn pos(&self) -> usize {
         self.pos
@@ -270,7 +283,10 @@ mod tests {
     fn limits_reject_before_allocation() {
         let l = Limits::default();
         assert!(l.check_dimensions(8000, 5000).is_ok());
-        assert_eq!(l.check_dimensions(8000, 8000), Err(Error::Limit("image pixel count")));
+        assert_eq!(
+            l.check_dimensions(8000, 8000),
+            Err(Error::Limit("image pixel count"))
+        );
         assert!(l.check_dimensions(0, 1).is_err());
         assert!(l.alloc_size(u64::MAX, 2).is_err());
     }

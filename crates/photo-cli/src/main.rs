@@ -61,12 +61,19 @@ fn meta_json(path: &str, data: &[u8], names: &[String]) -> Result<Value, String>
 }
 
 fn sanitize_pdf(src: &str, dst: &str) -> Result<(), String> {
-    let info = Command::new("pdfinfo").arg(src).stdin(Stdio::null()).stderr(Stdio::null()).output().map_err(|e| e.to_string())?;
+    let info = Command::new("pdfinfo")
+        .arg(src)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
     if !info.status.success() {
         return Err("pdfinfo failed".into());
     }
     let pages = audeniq_photo::pdf::pages_from_pdfinfo(&info.stdout).map_err(|e| e.to_string())?;
-    let dir = std::path::Path::new(dst).parent().unwrap_or(std::path::Path::new("."));
+    let dir = std::path::Path::new(dst)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     let prefix = dir.join("raster");
     let ok = Command::new("pdftoppm")
         .args(audeniq_photo::pdf::pdftoppm_args(pages))
@@ -85,20 +92,32 @@ fn sanitize_pdf(src: &str, dst: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("raster-") && n.ends_with(".jpg")))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("raster-") && n.ends_with(".jpg"))
+        })
         .collect();
     rasters.sort();
     if rasters.len() != pages as usize {
         return Err("incomplete document rasterization".into());
     }
-    let bytes = rasters.iter().map(std::fs::read).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let bytes = rasters
+        .iter()
+        .map(std::fs::read)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     let out = audeniq_photo::pdf::image_only_pdf(&bytes, &deadline()).map_err(|e| e.to_string())?;
     std::fs::write(dst, out).map_err(|e| e.to_string())
 }
 
 fn run(args: &[String]) -> Result<(), String> {
     let cmd = args.first().map(String::as_str).ok_or("missing command")?;
-    let file = || args.get(1).map(String::as_str).ok_or_else(|| "missing file".to_string());
+    let file = || {
+        args.get(1)
+            .map(String::as_str)
+            .ok_or_else(|| "missing file".to_string())
+    };
     match cmd {
         "probe" => {
             let path = file()?;
@@ -110,23 +129,30 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "meta" => {
             let path = file()?;
-            let names: Vec<String> = args[2..].iter().filter_map(|a| a.strip_prefix('-').map(str::to_owned)).collect();
+            let names: Vec<String> = args[2..]
+                .iter()
+                .filter_map(|a| a.strip_prefix('-').map(str::to_owned))
+                .collect();
             print(&meta_json(path, &read(path)?, &names)?);
         }
         "color" => {
             let m = audeniq_photo::metadata(&read(file()?)?).map_err(|e| e.to_string())?;
-            print(&json!({"inspection_status": "COMPLETED", "properties": audeniq_photo::color_report(&m)}));
+            print(
+                &json!({"inspection_status": "COMPLETED", "properties": audeniq_photo::color_report(&m)}),
+            );
         }
         "provenance" => {
             let m = audeniq_photo::metadata(&read(file()?)?).map_err(|e| e.to_string())?;
             print(&Value::Object(audeniq_photo::provenance_fields(&m)));
         }
         "qr" => {
-            let n = audeniq_photo::qr_count(&read(file()?)?, &deadline()).map_err(|e| e.to_string())?;
+            let n =
+                audeniq_photo::qr_count(&read(file()?)?, &deadline()).map_err(|e| e.to_string())?;
             print(&json!({"qr_count": n}));
         }
         "cover" => {
-            let r = audeniq_photo::inspect_cover(&read(file()?)?, &deadline()).map_err(|e| e.to_string())?;
+            let r = audeniq_photo::inspect_cover(&read(file()?)?, &deadline())
+                .map_err(|e| e.to_string())?;
             print(&json!({
                 "format_name": r.probe.format_name(),
                 "width": r.probe.width,
@@ -145,13 +171,20 @@ fn run(args: &[String]) -> Result<(), String> {
                 return sanitize_pdf(src, dst);
             }
             let kind = Kind::from_mime(mime).ok_or("unsupported type")?;
-            let out = audeniq_photo::sanitize(&read(src)?, kind, &deadline()).map_err(|e| e.to_string())?;
+            let out = audeniq_photo::sanitize(&read(src)?, kind, &deadline())
+                .map_err(|e| e.to_string())?;
             std::fs::write(dst, out).map_err(|e| e.to_string())?;
         }
         "convert" => {
             let (src, dst) = (file()?, args.get(2).ok_or("missing destination")?);
-            let quality = args.iter().position(|a| a == "--quality").and_then(|i| args.get(i + 1)).and_then(|q| q.parse().ok()).unwrap_or(90u8);
-            let img = audeniq_photo::sanitize::pixels(&read(src)?, &deadline()).map_err(|e| e.to_string())?;
+            let quality = args
+                .iter()
+                .position(|a| a == "--quality")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|q| q.parse().ok())
+                .unwrap_or(90u8);
+            let img = audeniq_photo::sanitize::pixels(&read(src)?, &deadline())
+                .map_err(|e| e.to_string())?;
             let out = if dst.ends_with(".png") {
                 photo_png_encode(&img)?
             } else {

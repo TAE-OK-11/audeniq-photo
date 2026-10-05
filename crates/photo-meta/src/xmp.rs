@@ -23,7 +23,10 @@ struct Element {
 
 impl Element {
     fn attr(&self, ns: &str, local: &str) -> Option<&str> {
-        self.attrs.iter().find(|a| a.0 == ns && a.1 == local).map(|a| a.3.as_str())
+        self.attrs
+            .iter()
+            .find(|a| a.0 == ns && a.1 == local)
+            .map(|a| a.3.as_str())
     }
     fn is(&self, ns: &str, local: &str) -> bool {
         self.ns == ns && self.local == local
@@ -51,7 +54,11 @@ fn decode_entities(s: &str) -> String {
             "amp" => Some('&'),
             "quot" => Some('"'),
             "apos" => Some('\''),
-            _ if ent.starts_with("#x") || ent.starts_with("#X") => u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32),
+            _ if ent.starts_with("#x") || ent.starts_with("#X") => {
+                u32::from_str_radix(&ent[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
             _ if ent.starts_with('#') => ent[1..].parse().ok().and_then(char::from_u32),
             _ => None,
         };
@@ -188,10 +195,22 @@ impl<'a> Parser<'a> {
         let resolve = |q: &str, default_ns: bool| -> (String, String, String) {
             match q.split_once(':') {
                 Some((p, l)) => {
-                    let ns = if p == "xml" { XML_NS.to_string() } else { scope.get(p).cloned().unwrap_or_default() };
+                    let ns = if p == "xml" {
+                        XML_NS.to_string()
+                    } else {
+                        scope.get(p).cloned().unwrap_or_default()
+                    };
                     (ns, l.to_string(), p.to_string())
                 }
-                None => (if default_ns { scope.get("").cloned().unwrap_or_default() } else { String::new() }, q.to_string(), String::new()),
+                None => (
+                    if default_ns {
+                        scope.get("").cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    q.to_string(),
+                    String::new(),
+                ),
             }
         };
         let (ns, local, prefix) = resolve(&qname, true);
@@ -202,7 +221,14 @@ impl<'a> Parser<'a> {
                 (ans, al, ap, v)
             })
             .collect();
-        let mut el = Element { ns, local, prefix, attrs, children: Vec::new(), text: String::new() };
+        let mut el = Element {
+            ns,
+            local,
+            prefix,
+            attrs,
+            children: Vec::new(),
+            text: String::new(),
+        };
         if self_closing {
             return Some(el);
         }
@@ -229,7 +255,9 @@ impl<'a> Parser<'a> {
                 el.children.push(child);
                 continue;
             }
-            let end = self.s[self.pos..].find('<').map_or(self.s.len(), |i| self.pos + i);
+            let end = self.s[self.pos..]
+                .find('<')
+                .map_or(self.s.len(), |i| self.pos + i);
             el.text.push_str(&decode_entities(&self.s[self.pos..end]));
             self.pos = end;
         }
@@ -306,7 +334,11 @@ impl Walk<'_> {
             if is_rdf_or_xml(&a.0) || a.0.is_empty() {
                 continue;
             }
-            self.m.push(group_prefix(&a.0, &a.2), ucfirst(&a.1), Value::Text(a.3.clone()));
+            self.m.push(
+                group_prefix(&a.0, &a.2),
+                ucfirst(&a.1),
+                Value::Text(a.3.clone()),
+            );
         }
         for p in &d.children {
             let group = group_prefix(&p.ns, &p.prefix);
@@ -319,14 +351,22 @@ impl Walk<'_> {
             self.m.push(group, name, Value::Text(r.to_string()));
             return;
         }
-        let container = p.children.iter().find(|c| c.ns == RDF && matches!(c.local.as_str(), "Alt" | "Bag" | "Seq"));
+        let container = p
+            .children
+            .iter()
+            .find(|c| c.ns == RDF && matches!(c.local.as_str(), "Alt" | "Bag" | "Seq"));
         if let Some(c) = container {
             let items: Vec<&Element> = c.children.iter().filter(|li| li.is(RDF, "li")).collect();
             if c.local == "Alt" && items.iter().any(|li| li.attr(XML_NS, "lang").is_some()) {
                 for li in items {
                     let lang = li.attr(XML_NS, "lang").unwrap_or("x-default");
-                    let n = if lang.eq_ignore_ascii_case("x-default") { name.to_string() } else { format!("{name}-{lang}") };
-                    self.m.push(group, n, Value::Text(li.text.trim().to_string()));
+                    let n = if lang.eq_ignore_ascii_case("x-default") {
+                        name.to_string()
+                    } else {
+                        format!("{name}-{lang}")
+                    };
+                    self.m
+                        .push(group, n, Value::Text(li.text.trim().to_string()));
                 }
                 return;
             }
@@ -346,22 +386,33 @@ impl Walk<'_> {
         let is_struct = p.attr(RDF, "parseType") == Some("Resource")
             || p.children.iter().any(|c| c.is(RDF, "Description"))
             || (!p.children.is_empty())
-            || p.attrs.iter().any(|a| !is_rdf_or_xml(&a.0) && !a.0.is_empty());
+            || p.attrs
+                .iter()
+                .any(|a| !is_rdf_or_xml(&a.0) && !a.0.is_empty());
         if is_struct {
             self.structure(p, group, name);
             return;
         }
-        self.m.push(group, name, Value::Text(p.text.trim().to_string()));
+        self.m
+            .push(group, name, Value::Text(p.text.trim().to_string()));
     }
 
     /// Flatten a structure: field tag name = parent name + field name.
     fn structure(&mut self, s: &Element, group: &str, name: &str) {
-        let target = s.children.iter().find(|c| c.is(RDF, "Description")).unwrap_or(s);
+        let target = s
+            .children
+            .iter()
+            .find(|c| c.is(RDF, "Description"))
+            .unwrap_or(s);
         for a in &target.attrs {
             if is_rdf_or_xml(&a.0) || a.0.is_empty() {
                 continue;
             }
-            self.m.push(group, format!("{name}{}", ucfirst(&a.1)), Value::Text(a.3.clone()));
+            self.m.push(
+                group,
+                format!("{name}{}", ucfirst(&a.1)),
+                Value::Text(a.3.clone()),
+            );
         }
         for f in &target.children {
             if f.ns == RDF {
@@ -392,8 +443,22 @@ pub(crate) fn read(data: &[u8], m: &mut Metadata) {
         return;
     }
     let text = match data {
-        [0xFE, 0xFF, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>()),
-        [0xFF, 0xFE, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+        [0xFE, 0xFF, rest @ ..] => String::from_utf16_lossy(
+            &rest
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        ),
+        [0xFF, 0xFE, rest @ ..] => String::from_utf16_lossy(
+            &rest
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        ),
         [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
         _ => match std::str::from_utf8(data) {
             Ok(s) => s.to_string(),
@@ -401,7 +466,11 @@ pub(crate) fn read(data: &[u8], m: &mut Metadata) {
         },
     };
     let text = text.trim_end_matches(['\0', ' ', '\n', '\r', '\t']);
-    let mut p = Parser { s: text, pos: 0, nodes: 0 };
+    let mut p = Parser {
+        s: text,
+        pos: 0,
+        nodes: 0,
+    };
     match p.document() {
         Some(roots) => {
             let mut w = Walk { m };
@@ -432,21 +501,47 @@ mod tests {
 </rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#;
         let mut m = Metadata::default();
         read(x.as_bytes(), &mut m);
-        let get = |g: &str, n: &str| m.tags.iter().find(|t| t.group == g && t.name == n).map(|t| t.value.clone());
-        assert_eq!(get("XMP-xmp", "CreatorTool"), Some(Value::Text("Midjourney & co".into())));
-        assert_eq!(get("XMP-tiff", "Orientation"), Some(Value::Text("6".into())));
-        assert_eq!(get("XMP-dc", "Description"), Some(Value::Text("Made with AI".into())));
-        assert_eq!(get("XMP-dc", "Description-ko-KR"), Some(Value::Text("설명".into())));
-        assert_eq!(get("XMP-dc", "Subject"), Some(Value::List(vec!["a".into(), "b".into()])));
+        let get = |g: &str, n: &str| {
+            m.tags
+                .iter()
+                .find(|t| t.group == g && t.name == n)
+                .map(|t| t.value.clone())
+        };
+        assert_eq!(
+            get("XMP-xmp", "CreatorTool"),
+            Some(Value::Text("Midjourney & co".into()))
+        );
+        assert_eq!(
+            get("XMP-tiff", "Orientation"),
+            Some(Value::Text("6".into()))
+        );
+        assert_eq!(
+            get("XMP-dc", "Description"),
+            Some(Value::Text("Made with AI".into()))
+        );
+        assert_eq!(
+            get("XMP-dc", "Description-ko-KR"),
+            Some(Value::Text("설명".into()))
+        );
+        assert_eq!(
+            get("XMP-dc", "Subject"),
+            Some(Value::List(vec!["a".into(), "b".into()]))
+        );
         assert!(get("XMP-iptcExt", "DigitalSourceType").is_some());
-        assert_eq!(get("XMP-xmpMM", "HistorySoftwareAgent"), Some(Value::Text("Adobe Photoshop".into())));
+        assert_eq!(
+            get("XMP-xmpMM", "HistorySoftwareAgent"),
+            Some(Value::Text("Adobe Photoshop".into()))
+        );
         assert!(get("XMP-xmpMM", "Software").is_none());
     }
 
     #[test]
     fn hostile_xml_is_bounded() {
         let mut m = Metadata::default();
-        read(b"<!DOCTYPE x [<!ENTITY a \"aaaa\"><!ENTITY b \"&a;&a;\">]><x>&b;</x>", &mut m);
+        read(
+            b"<!DOCTYPE x [<!ENTITY a \"aaaa\"><!ENTITY b \"&a;&a;\">]><x>&b;</x>",
+            &mut m,
+        );
         let deep = "<a>".repeat(10_000);
         read(deep.as_bytes(), &mut m);
         read(b"<a b='unterminated", &mut m);

@@ -40,7 +40,10 @@ impl<'a> ChunkIter<'a> {
         if data.len() < 8 || data[..8] != SIGNATURE {
             return Err(Error::Invalid("not a PNG file"));
         }
-        Ok(ChunkIter { bytes: Bytes::at(data, 8), done: false })
+        Ok(ChunkIter {
+            bytes: Bytes::at(data, 8),
+            done: false,
+        })
     }
 
     /// Bytes following IEND (only meaningful once IEND was returned).
@@ -110,7 +113,10 @@ fn inflate_text(data: &[u8], budget: &mut usize) -> Result<Vec<u8>> {
 /// Decode a tEXt / zTXt / iTXt chunk body. `budget` bounds total
 /// decompressed text across a file.
 pub fn parse_text(kind: &[u8; 4], data: &[u8], budget: &mut usize) -> Result<Text> {
-    let nul = data.iter().position(|&b| b == 0).ok_or(Error::Invalid("text keyword"))?;
+    let nul = data
+        .iter()
+        .position(|&b| b == 0)
+        .ok_or(Error::Invalid("text keyword"))?;
     if nul == 0 || nul > 79 {
         return Err(Error::Invalid("text keyword length"));
     }
@@ -122,14 +128,22 @@ pub fn parse_text(kind: &[u8; 4], data: &[u8], budget: &mut usize) -> Result<Tex
                 return Err(Error::Limit("text size"));
             }
             *budget -= rest.len();
-            Ok(Text { keyword, text: latin1(rest), language: None })
+            Ok(Text {
+                keyword,
+                text: latin1(rest),
+                language: None,
+            })
         }
         b"zTXt" => {
             let (&method, body) = rest.split_first().ok_or(Error::Truncated)?;
             if method != 0 {
                 return Err(Error::Invalid("zTXt compression method"));
             }
-            Ok(Text { keyword, text: latin1(&inflate_text(body, budget)?), language: None })
+            Ok(Text {
+                keyword,
+                text: latin1(&inflate_text(body, budget)?),
+                language: None,
+            })
         }
         b"iTXt" => {
             let mut b = Bytes::new(rest);
@@ -153,7 +167,11 @@ pub fn parse_text(kind: &[u8; 4], data: &[u8], budget: &mut usize) -> Result<Tex
                 _ => return Err(Error::Invalid("iTXt compression")),
             };
             let text = String::from_utf8(raw).map_err(|_| Error::Invalid("iTXt UTF-8"))?;
-            Ok(Text { keyword, text, language: (!language.is_empty()).then_some(language) })
+            Ok(Text {
+                keyword,
+                text,
+                language: (!language.is_empty()).then_some(language),
+            })
         }
         _ => Err(Error::Invalid("not a text chunk")),
     }
@@ -215,6 +233,13 @@ impl Info {
         if compression != 0 || filter != 0 || interlace > 1 {
             return Err(Error::Invalid("IHDR methods"));
         }
-        Ok(Info { width, height, bit_depth, color_type, interlace: interlace == 1, ..Info::default() })
+        Ok(Info {
+            width,
+            height,
+            bit_depth,
+            color_type,
+            interlace: interlace == 1,
+            ..Info::default()
+        })
     }
 }

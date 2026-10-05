@@ -26,7 +26,9 @@ pub(crate) fn read(d: &[u8], end: usize, m: &mut Metadata) -> usize {
         let len = u32::from_le_bytes(items[pos..pos + 4].try_into().expect("4")) as usize;
         let iflags = u32::from_le_bytes(items[pos + 4..pos + 8].try_into().expect("4"));
         pos += 8;
-        let Some(kend) = items[pos..].iter().position(|&b| b == 0) else { break };
+        let Some(kend) = items[pos..].iter().position(|&b| b == 0) else {
+            break;
+        };
         let key = String::from_utf8_lossy(&items[pos..pos + kend]).into_owned();
         pos += kend + 1;
         let Some(value) = items.get(pos..pos.saturating_add(len)) else {

@@ -40,7 +40,14 @@ impl Plane {
     }
 
     /// Upsampled samples of output row `y` into `out` (len >= image width).
-    fn upsample(&self, m: Method, y: usize, out: &mut [u8], tmp: &mut Vec<u8>, sums: &mut Vec<u32>) {
+    fn upsample(
+        &self,
+        m: Method,
+        y: usize,
+        out: &mut [u8],
+        tmp: &mut Vec<u8>,
+        sums: &mut Vec<u32>,
+    ) {
         let w = out.len();
         match m {
             Method::Full => out.copy_from_slice(&self.row(y)[..w]),
@@ -70,7 +77,7 @@ impl Plane {
 
     /// Row used as the "next nearest" context and the h1v2 rounding bias.
     fn neighbor(&self, y: usize, iy: usize) -> (usize, u32) {
-        if y % 2 == 0 {
+        if y.is_multiple_of(2) {
             (iy.saturating_sub(1), 1)
         } else {
             ((iy + 1).min(self.height - 1), 2)
@@ -130,7 +137,12 @@ fn tables() -> &'static Tables {
         const SCALEBITS: i32 = 16;
         const ONE_HALF: i64 = 1 << (SCALEBITS - 1);
         let fix = |x: f64| (x * f64::from(1u32 << SCALEBITS) + 0.5) as i64;
-        let mut t = Tables { cr_r: [0; 256], cb_b: [0; 256], cr_g: [0; 256], cb_g: [0; 256] };
+        let mut t = Tables {
+            cr_r: [0; 256],
+            cb_b: [0; 256],
+            cr_g: [0; 256],
+            cb_g: [0; 256],
+        };
         for i in 0..256 {
             let x = i as i64 - 128;
             t.cr_r[i] = ((fix(1.40200) * x + ONE_HALF) >> SCALEBITS) as i32;
@@ -207,7 +219,12 @@ pub(crate) fn convert(
             }
         }
     }
-    Ok(Image { width: width as u32, height: height as u32, format, data })
+    Ok(Image {
+        width: width as u32,
+        height: height as u32,
+        format,
+        data,
+    })
 }
 
 /// jdcolor.c `ycc_rgb_convert` with the table entries computed inline

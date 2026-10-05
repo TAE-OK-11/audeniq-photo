@@ -54,7 +54,14 @@ fn python(args: &[&str]) -> Option<std::process::Output> {
 }
 
 fn reference(script: &Path, src: &Path, dst: &Path, mime: &str) -> bool {
-    Command::new("python3").arg(script).arg(src).arg(dst).arg(mime).status().map(|s| s.success()).unwrap_or(false)
+    Command::new("python3")
+        .arg(script)
+        .arg(src)
+        .arg(dst)
+        .arg(mime)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn decode(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
@@ -65,7 +72,8 @@ fn decode(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
 
 #[test]
 fn matches_python_sanitizer() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("audeniq-photo-sanitize-{}", std::process::id()));
+    let dir: PathBuf =
+        std::env::temp_dir().join(format!("audeniq-photo-sanitize-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/reference/sanitize-upload.py");
     let Some(out) = python(&["-c", FIXTURES, dir.to_str().unwrap()]) else {
@@ -95,9 +103,19 @@ fn matches_python_sanitizer() {
                     failures.push(format!("{name}: size {tw}x{th} vs {ow}x{oh}"));
                     continue;
                 }
-                let max = tp.iter().zip(&op).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+                let max = tp
+                    .iter()
+                    .zip(&op)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap_or(0);
                 let same_bytes = theirs == ours;
-                report.push(format!("{name} -> {mime}: {ow}x{oh} max pixel diff {max} bytes {} ({} vs {} B)", if same_bytes { "identical" } else { "differ" }, ours.len(), theirs.len()));
+                report.push(format!(
+                    "{name} -> {mime}: {ow}x{oh} max pixel diff {max} bytes {} ({} vs {} B)",
+                    if same_bytes { "identical" } else { "differ" },
+                    ours.len(),
+                    theirs.len()
+                ));
                 // ICC conversion is within ±3 of LittleCMS; a lossy JPEG
                 // re-encode can spread those differences a little further.
                 let icc = name.contains("icc") || name.contains("adobe");
@@ -110,7 +128,10 @@ fn matches_python_sanitizer() {
                     failures.push(format!("{name}: max diff {max}"));
                 }
             }
-            (t, o) => failures.push(format!("{name}: reference ok={t} ours={:?}", o.map(|v| v.len()))),
+            (t, o) => failures.push(format!(
+                "{name}: reference ok={t} ours={:?}",
+                o.map(|v| v.len())
+            )),
         }
     }
     std::fs::remove_dir_all(&dir).ok();

@@ -5,7 +5,9 @@
 
 use photo_core::{Bytes, Error, Result};
 
-const ALLOWED: [&[u8; 4]; 7] = [b"IHDR", b"IDAT", b"IEND", b"pHYs", b"sRGB", b"gAMA", b"cHRM"];
+const ALLOWED: [&[u8; 4]; 7] = [
+    b"IHDR", b"IDAT", b"IEND", b"pHYs", b"sRGB", b"gAMA", b"cHRM",
+];
 
 pub fn validate_signature(data: &[u8]) -> Result<()> {
     if !(45..=45_000).contains(&data.len()) || data[..8] != crate::SIGNATURE {
@@ -22,7 +24,10 @@ pub fn validate_signature(data: &[u8]) -> Result<()> {
         let mut b = Bytes::at(data, pos);
         let length = b.u32_be()? as usize;
         let kind: [u8; 4] = b.array()?;
-        let end = pos.checked_add(length).and_then(|v| v.checked_add(12)).ok_or(Error::Truncated)?;
+        let end = pos
+            .checked_add(length)
+            .and_then(|v| v.checked_add(12))
+            .ok_or(Error::Truncated)?;
         if end > data.len() || !ALLOWED.contains(&&kind) {
             return Err(Error::Invalid("signature metadata or invalid chunk"));
         }
@@ -51,7 +56,12 @@ pub fn validate_signature(data: &[u8]) -> Result<()> {
                 {
                     return Err(Error::Invalid("signature dimensions exceeded"));
                 }
-                if depth != 8 || ![0, 2, 4, 6].contains(&colors) || compression != 0 || filtering != 0 || interlace != 0 {
+                if depth != 8
+                    || ![0, 2, 4, 6].contains(&colors)
+                    || compression != 0
+                    || filtering != 0
+                    || interlace != 0
+                {
                     return Err(Error::Invalid("signature pixel format unsupported"));
                 }
             }

@@ -4,11 +4,13 @@ use crate::{Metadata, clean, latin1, tag_name};
 
 /// Size of a leading ID3v2 tag (0 if none).
 pub(crate) fn skip_header(d: &[u8]) -> usize {
-    if d.len() >= 10 && &d[..3] == b"ID3" && d[3] < 5 {
-        if let Some(size) = syncsafe(&d[6..10]) {
-            let footer = if d[5] & 0x10 != 0 { 10 } else { 0 };
-            return (10 + size as usize + footer).min(d.len());
-        }
+    if d.len() >= 10
+        && &d[..3] == b"ID3"
+        && d[3] < 5
+        && let Some(size) = syncsafe(&d[6..10])
+    {
+        let footer = if d[5] & 0x10 != 0 { 10 } else { 0 };
+        return (10 + size as usize + footer).min(d.len());
     }
     0
 }
@@ -42,8 +44,16 @@ fn decode_text(enc: u8, b: &[u8]) -> String {
                 _ => (enc == 1, b),
             };
             let units: Vec<u16> = body
-                .chunks_exact(2)
-                .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| {
+                    if le {
+                        u16::from_le_bytes([c[0], c[1]])
+                    } else {
+                        u16::from_be_bytes([c[0], c[1]])
+                    }
+                })
                 .collect();
             String::from_utf16_lossy(&units)
         }
@@ -112,7 +122,9 @@ pub(crate) fn v2(d: &[u8], m: &mut Metadata) {
         let size = if major == 4 {
             syncsafe(body.get(0..4).unwrap_or(&[0x80])).unwrap_or(0) as usize
         } else {
-            body.get(0..4).map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize + 4)
+            body.get(0..4).map_or(0, |b| {
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize + 4
+            })
         };
         pos = size;
     }
@@ -124,7 +136,10 @@ pub(crate) fn v2(d: &[u8], m: &mut Metadata) {
         if id_bytes[0] == 0 {
             break;
         }
-        if !id_bytes.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        if !id_bytes
+            .iter()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
             m.warn("invalid ID3 frame id");
             break;
         }
@@ -134,7 +149,11 @@ pub(crate) fn v2(d: &[u8], m: &mut Metadata) {
             3 => u32::from_be_bytes(body[pos + 4..pos + 8].try_into().expect("4")) as usize,
             _ => syncsafe(&body[pos + 4..pos + 8]).unwrap_or(u32::MAX) as usize,
         };
-        let fflags = if major == 2 { 0 } else { u16::from_be_bytes([body[pos + 8], body[pos + 9]]) };
+        let fflags = if major == 2 {
+            0
+        } else {
+            u16::from_be_bytes([body[pos + 8], body[pos + 9]])
+        };
         let start = pos + hdr;
         let Some(end) = start.checked_add(size).filter(|&e| e <= body.len()) else {
             m.warn("truncated ID3 frame");
@@ -170,11 +189,17 @@ pub(crate) fn v2(d: &[u8], m: &mut Metadata) {
 }
 
 fn frame(id: &str, f: &[u8], group: &str, m: &mut Metadata) {
-    let Some((&enc, rest)) = f.split_first() else { return };
+    let Some((&enc, rest)) = f.split_first() else {
+        return;
+    };
     if id == "TXXX" || id == "TXX" {
         let (desc, value) = split_term(enc, rest);
         let desc = decode_text(enc, desc);
-        let value = clean(&decode_text(enc, value).trim_end_matches('\0').replace('\0', "/"));
+        let value = clean(
+            &decode_text(enc, value)
+                .trim_end_matches('\0')
+                .replace('\0', "/"),
+        );
         m.text(group, "UserDefinedText", format!("({desc}) {value}"));
         // Aliases matching ffprobe's tag mapping (encoder, software, ...).
         let alias = match desc.to_ascii_lowercase().as_str() {
@@ -206,7 +231,11 @@ fn frame(id: &str, f: &[u8], group: &str, m: &mut Metadata) {
         return;
     }
     if id.starts_with('T') {
-        let value = clean(&decode_text(enc, rest).trim_end_matches('\0').replace('\0', "/"));
+        let value = clean(
+            &decode_text(enc, rest)
+                .trim_end_matches('\0')
+                .replace('\0', "/"),
+        );
         if let Some(name) = frame_name(id) {
             m.text(group, name, value.clone());
         } else {
@@ -225,7 +254,8 @@ pub(crate) fn v1(d: &[u8], m: &mut Metadata) -> usize {
         return 0;
     }
     let t = &d[d.len() - 128..];
-    let field = |a: usize, b: usize| clean(&latin1(t[a..b].split(|&c| c == 0).next().unwrap_or(&[])));
+    let field =
+        |a: usize, b: usize| clean(&latin1(t[a..b].split(|&c| c == 0).next().unwrap_or(&[])));
     m.text("ID3v1", "Title", field(3, 33));
     m.text("ID3v1", "Artist", field(33, 63));
     m.text("ID3v1", "Album", field(63, 93));

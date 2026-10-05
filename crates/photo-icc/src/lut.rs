@@ -28,7 +28,8 @@ pub(crate) struct Clut {
 impl Clut {
     pub(crate) fn new(grid: Vec<usize>, outputs: usize, table: Vec<u16>) -> Result<Clut> {
         let inputs = grid.len();
-        if inputs == 0 || inputs > 8 || outputs == 0 || outputs > 16 || grid.iter().any(|&g| g < 2) {
+        if inputs == 0 || inputs > 8 || outputs == 0 || outputs > 16 || grid.iter().any(|&g| g < 2)
+        {
             return Err(Error::Invalid("CLUT shape"));
         }
         let mut opta = vec![0usize; inputs];
@@ -36,11 +37,20 @@ impl Clut {
         for i in 1..inputs {
             opta[i] = opta[i - 1] * grid[inputs - i];
         }
-        let n = grid.iter().try_fold(outputs, |acc, &g| acc.checked_mul(g)).ok_or(Error::Limit("CLUT size"))?;
+        let n = grid
+            .iter()
+            .try_fold(outputs, |acc, &g| acc.checked_mul(g))
+            .ok_or(Error::Limit("CLUT size"))?;
         if n != table.len() {
             return Err(Error::Invalid("CLUT size"));
         }
-        Ok(Clut { inputs, outputs, grid, table, opta })
+        Ok(Clut {
+            inputs,
+            outputs,
+            grid,
+            table,
+            opta,
+        })
     }
 
     /// Evaluate with 16-bit inputs, as lcms does for 16-bit tables.
@@ -94,17 +104,41 @@ impl Clut {
             let d = |x: usize, y: usize, z: usize| i32::from(t[base + x + y + z + c]);
             let c0 = d(x0, y0, z0);
             let (c1, c2, c3) = if rx >= ry && ry >= rz {
-                (d(x1, y0, z0) - c0, d(x1, y1, z0) - d(x1, y0, z0), d(x1, y1, z1) - d(x1, y1, z0))
+                (
+                    d(x1, y0, z0) - c0,
+                    d(x1, y1, z0) - d(x1, y0, z0),
+                    d(x1, y1, z1) - d(x1, y1, z0),
+                )
             } else if rx >= rz && rz >= ry {
-                (d(x1, y0, z0) - c0, d(x1, y1, z1) - d(x1, y0, z1), d(x1, y0, z1) - d(x1, y0, z0))
+                (
+                    d(x1, y0, z0) - c0,
+                    d(x1, y1, z1) - d(x1, y0, z1),
+                    d(x1, y0, z1) - d(x1, y0, z0),
+                )
             } else if rz >= rx && rx >= ry {
-                (d(x1, y0, z1) - d(x0, y0, z1), d(x1, y1, z1) - d(x1, y0, z1), d(x0, y0, z1) - c0)
+                (
+                    d(x1, y0, z1) - d(x0, y0, z1),
+                    d(x1, y1, z1) - d(x1, y0, z1),
+                    d(x0, y0, z1) - c0,
+                )
             } else if ry >= rx && rx >= rz {
-                (d(x1, y1, z0) - d(x0, y1, z0), d(x0, y1, z0) - c0, d(x1, y1, z1) - d(x1, y1, z0))
+                (
+                    d(x1, y1, z0) - d(x0, y1, z0),
+                    d(x0, y1, z0) - c0,
+                    d(x1, y1, z1) - d(x1, y1, z0),
+                )
             } else if ry >= rz && rz >= rx {
-                (d(x1, y1, z1) - d(x0, y1, z1), d(x0, y1, z0) - c0, d(x0, y1, z1) - d(x0, y1, z0))
+                (
+                    d(x1, y1, z1) - d(x0, y1, z1),
+                    d(x0, y1, z0) - c0,
+                    d(x0, y1, z1) - d(x0, y1, z0),
+                )
             } else if rz >= ry && ry >= rx {
-                (d(x1, y1, z1) - d(x0, y1, z1), d(x0, y1, z1) - d(x0, y0, z1), d(x0, y0, z1) - c0)
+                (
+                    d(x1, y1, z1) - d(x0, y1, z1),
+                    d(x0, y1, z1) - d(x0, y0, z1),
+                    d(x0, y0, z1) - c0,
+                )
             } else {
                 (0, 0, 0)
             };
@@ -197,21 +231,46 @@ impl Lut {
                 let grid = b.u8()? as usize;
                 b.skip(1)?;
                 b.skip(36)?; // matrix: only meaningful for XYZ input
-                let (n_in, n_out) = if wide { (b.u16_be()? as usize, b.u16_be()? as usize) } else { (256, 256) };
-                if !(1..=8).contains(&inputs) || !(1..=16).contains(&outputs) || grid < 2 || n_in < 2 || n_out < 2 || n_in > 4096 || n_out > 4096 {
+                let (n_in, n_out) = if wide {
+                    (b.u16_be()? as usize, b.u16_be()? as usize)
+                } else {
+                    (256, 256)
+                };
+                if !(1..=8).contains(&inputs)
+                    || !(1..=16).contains(&outputs)
+                    || grid < 2
+                    || n_in < 2
+                    || n_out < 2
+                    || n_in > 4096
+                    || n_out > 4096
+                {
                     return Err(Error::Invalid("lut16 shape"));
                 }
                 let mut read = |n: usize| -> Result<Vec<u16>> {
-                    (0..n).map(|_| if wide { b.u16_be() } else { b.u8().map(|v| u16::from(v) * 257) }).collect()
+                    (0..n)
+                        .map(|_| {
+                            if wide {
+                                b.u16_be()
+                            } else {
+                                b.u8().map(|v| u16::from(v) * 257)
+                            }
+                        })
+                        .collect()
                 };
-                let a_curves = (0..inputs).map(|_| read(n_in).map(Curve::Table)).collect::<Result<Vec<_>>>()?;
-                let entries = (0..inputs).try_fold(outputs, |acc: usize, _| acc.checked_mul(grid)).ok_or(Error::Limit("CLUT size"))?;
+                let a_curves = (0..inputs)
+                    .map(|_| read(n_in).map(Curve::Table))
+                    .collect::<Result<Vec<_>>>()?;
+                let entries = (0..inputs)
+                    .try_fold(outputs, |acc: usize, _| acc.checked_mul(grid))
+                    .ok_or(Error::Limit("CLUT size"))?;
                 if entries > MAX_CLUT_ENTRIES {
                     return Err(Error::Limit("CLUT size"));
                 }
                 let table = read(entries)?;
                 let clut = Clut::new(vec![grid; inputs], outputs, table)?;
-                let b_curves = (0..outputs).map(|_| read(n_out).map(Curve::Table)).collect::<Result<Vec<_>>>()?;
+                let b_curves = (0..outputs)
+                    .map(|_| read(n_out).map(Curve::Table))
+                    .collect::<Result<Vec<_>>>()?;
                 Ok(Lut {
                     inputs,
                     outputs,
@@ -220,7 +279,11 @@ impl Lut {
                     m_curves: Vec::new(),
                     matrix: None,
                     b_curves,
-                    lab: if wide { LabEncoding::V2 } else { LabEncoding::V4 },
+                    lab: if wide {
+                        LabEncoding::V2
+                    } else {
+                        LabEncoding::V4
+                    },
                 })
             }
             b"mAB " => {
@@ -267,7 +330,10 @@ impl Lut {
                     let precision = c.u8()?;
                     c.skip(3)?;
                     let grid: Vec<usize> = g[..inputs].iter().map(|&x| x as usize).collect();
-                    let entries = grid.iter().try_fold(outputs, |acc: usize, &x| acc.checked_mul(x)).ok_or(Error::Limit("CLUT size"))?;
+                    let entries = grid
+                        .iter()
+                        .try_fold(outputs, |acc: usize, &x| acc.checked_mul(x))
+                        .ok_or(Error::Limit("CLUT size"))?;
                     if entries > MAX_CLUT_ENTRIES {
                         return Err(Error::Limit("CLUT size"));
                     }
@@ -282,13 +348,25 @@ impl Lut {
                 } else {
                     None
                 };
-                if clut.as_ref().is_some_and(|c| c.inputs != inputs || c.outputs != outputs) {
+                if clut
+                    .as_ref()
+                    .is_some_and(|c| c.inputs != inputs || c.outputs != outputs)
+                {
                     return Err(Error::Invalid("lutAtoB CLUT shape"));
                 }
                 if clut.is_none() && inputs != outputs {
                     return Err(Error::Invalid("lutAtoB without CLUT"));
                 }
-                Ok(Lut { inputs, outputs, a_curves, clut, m_curves, matrix, b_curves, lab: LabEncoding::V4 })
+                Ok(Lut {
+                    inputs,
+                    outputs,
+                    a_curves,
+                    clut,
+                    m_curves,
+                    matrix,
+                    b_curves,
+                    lab: LabEncoding::V4,
+                })
             }
             _ => Err(Error::Unsupported("LUT tag type")),
         }
@@ -316,12 +394,12 @@ impl Lut {
         for (x, c) in v.iter_mut().zip(&self.m_curves) {
             *x = c.eval(*x);
         }
-        if let Some(m) = &self.matrix {
-            if self.outputs == 3 {
-                let (a, b, c) = (v[0], v[1], v[2]);
-                for i in 0..3 {
-                    v[i] = m[i * 3] * a + m[i * 3 + 1] * b + m[i * 3 + 2] * c + m[9 + i];
-                }
+        if let Some(m) = &self.matrix
+            && self.outputs == 3
+        {
+            let (a, b, c) = (v[0], v[1], v[2]);
+            for i in 0..3 {
+                v[i] = m[i * 3] * a + m[i * 3 + 1] * b + m[i * 3 + 2] * c + m[9 + i];
             }
         }
         for (x, c) in v.iter_mut().zip(&self.b_curves) {

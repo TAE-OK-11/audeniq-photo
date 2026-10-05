@@ -36,6 +36,10 @@ pub fn probe(data: &[u8]) -> Result<Probe> {
         if width == 0 || height == 0 {
             return Err(Error::Invalid("zero image dimension"));
         }
-        Ok(Probe { format, width, height })
+        Ok(Probe {
+            format,
+            width,
+            height,
+        })
     })
 }

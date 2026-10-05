@@ -36,7 +36,12 @@ fn read_proc(path: &str, key: &str) -> Option<u64> {
 
 fn thread_cpu() -> Duration {
     let s = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
-    Duration::from_nanos(s.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0))
+    Duration::from_nanos(
+        s.split_whitespace()
+            .next()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+    )
 }
 
 /// Measure an in-process operation: wall, thread CPU, peak RSS (VmHWM after
@@ -71,7 +76,12 @@ fn measure_cmds(cmds: &mut [Command]) -> Option<Sample> {
     let mut total = Sample::default();
     let t0 = Instant::now();
     for c in cmds.iter_mut() {
-        let child = c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()?;
+        let child = c
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
         let (status, ru) = wait_rusage(child.id())?;
         std::mem::forget(child);
         if !(libc::WIFEXITED(status) && matches!(libc::WEXITSTATUS(status), 0 | 4)) {
@@ -95,11 +105,20 @@ fn median(mut v: Vec<Sample>) -> Option<Sample> {
         c.sort();
         c[c.len() / 2]
     };
-    Some(Sample { wall: mid.wall, cpu, rss_kb: v.iter().map(|s| s.rss_kb).max().unwrap_or(0) })
+    Some(Sample {
+        wall: mid.wall,
+        cpu,
+        rss_kb: v.iter().map(|s| s.rss_kb).max().unwrap_or(0),
+    })
 }
 
 fn which(tool: &str) -> bool {
-    Command::new("sh").args(["-c", &format!("command -v {tool}")]).stdout(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    Command::new("sh")
+        .args(["-c", &format!("command -v {tool}")])
+        .stdout(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Deterministic photo-like content: gradients, soft noise and shapes.
@@ -114,14 +133,23 @@ fn synthetic(w: u32, h: u32, seed: u32) -> Image {
             let n = (x32 & 15) as i32 - 8;
             let cx = x as i32 - (w / 2) as i32;
             let cy = y as i32 - (h / 3) as i32;
-            let ring = if (cx * cx + cy * cy) % 40_000 < 9_000 { 40 } else { 0 };
+            let ring = if (cx * cx + cy * cy) % 40_000 < 9_000 {
+                40
+            } else {
+                0
+            };
             let r = ((x * 255 / w) as i32 + n + ring).clamp(0, 255) as u8;
             let g = ((y * 255 / h) as i32 + n - ring / 2).clamp(0, 255) as u8;
             let b = ((((x / 37) ^ (y / 53)) & 0x3F) as i32 * 3 + 60 + n).clamp(0, 255) as u8;
             data.extend_from_slice(&[r, g, b]);
         }
     }
-    Image { width: w, height: h, format: PixelFormat::Rgb8, data }
+    Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data,
+    }
 }
 
 fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
@@ -129,14 +157,26 @@ fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
     let mut out = Vec::new();
     let cover = synthetic(3000, 3000, 1);
     let p = dir.join("cover_3000.jpg");
-    std::fs::write(&p, photo_jpeg::encode(&cover, 92, photo_jpeg::Subsampling::S420).unwrap()).unwrap();
+    std::fs::write(
+        &p,
+        photo_jpeg::encode(&cover, 92, photo_jpeg::Subsampling::S420).unwrap(),
+    )
+    .unwrap();
     out.push((p, "image/jpeg"));
     let p = dir.join("cover_3000.png");
-    std::fs::write(&p, photo_png::encode(&cover, photo_deflate::Level::DEFAULT).unwrap()).unwrap();
+    std::fs::write(
+        &p,
+        photo_png::encode(&cover, photo_deflate::Level::DEFAULT).unwrap(),
+    )
+    .unwrap();
     out.push((p, "image/png"));
     let small = synthetic(1400, 1400, 2);
     let p = dir.join("cover_1400.jpg");
-    std::fs::write(&p, photo_jpeg::encode(&small, 88, photo_jpeg::Subsampling::S420).unwrap()).unwrap();
+    std::fs::write(
+        &p,
+        photo_jpeg::encode(&small, 88, photo_jpeg::Subsampling::S420).unwrap(),
+    )
+    .unwrap();
     out.push((p, "image/jpeg"));
     let icc = Path::new("/usr/share/color/icc/compatibleWithAdobeRGB1998.icc");
     if let Ok(profile) = std::fs::read(icc) {
@@ -153,7 +193,12 @@ fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
         std::fs::write(&p, with).unwrap();
         out.push((p, "image/jpeg"));
     }
-    let mut sig = Image { width: 600, height: 200, format: PixelFormat::Rgb8, data: vec![255; 600 * 200 * 3] };
+    let mut sig = Image {
+        width: 600,
+        height: 200,
+        format: PixelFormat::Rgb8,
+        data: vec![255; 600 * 200 * 3],
+    };
     for t in 0..2000u32 {
         let x = 40 + t * 520 / 2000;
         let y = 100 + ((t as f64 / 60.0).sin() * 50.0) as u32;
@@ -165,7 +210,11 @@ fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
         }
     }
     let p = dir.join("signature.png");
-    std::fs::write(&p, photo_png::encode(&sig, photo_deflate::Level::DEFAULT).unwrap()).unwrap();
+    std::fs::write(
+        &p,
+        photo_png::encode(&sig, photo_deflate::Level::DEFAULT).unwrap(),
+    )
+    .unwrap();
     out.push((p, "application/x-audeniq-signature"));
     out
 }
@@ -180,17 +229,28 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { iterations: 5, threads: 4, reference: None, json: None, markdown: None, files: Vec::new() };
+    let mut a = Args {
+        iterations: 5,
+        threads: 4,
+        reference: None,
+        json: None,
+        markdown: None,
+        files: Vec::new(),
+    };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--iterations" => a.iterations = it.next().and_then(|v| v.parse().ok()).unwrap_or(5).max(1),
+            "--iterations" => {
+                a.iterations = it.next().and_then(|v| v.parse().ok()).unwrap_or(5).max(1)
+            }
             "--threads" => a.threads = it.next().and_then(|v| v.parse().ok()).unwrap_or(4).max(1),
             "--reference-sanitizer" => a.reference = it.next().map(PathBuf::from),
             "--json" => a.json = it.next().map(PathBuf::from),
             "--markdown" => a.markdown = it.next().map(PathBuf::from),
             "-h" | "--help" => {
-                eprintln!("usage: audeniq-photo-bench [--iterations N] [--threads T] [--reference-sanitizer PATH] [--json OUT] [--markdown OUT] [FILE ...]");
+                eprintln!(
+                    "usage: audeniq-photo-bench [--iterations N] [--threads T] [--reference-sanitizer PATH] [--json OUT] [--markdown OUT] [FILE ...]"
+                );
                 std::process::exit(0);
             }
             f => a.files.push(PathBuf::from(f)),
@@ -216,11 +276,48 @@ fn main() {
     };
     std::fs::create_dir_all(tmp.join("out")).unwrap();
     let have = |t: &str| which(t);
-    let (ffprobe, exiftool, zbar, python) = (have("ffprobe"), have("exiftool"), have("zbarimg"), have("python3"));
+    let (ffprobe, exiftool, zbar, python) = (
+        have("ffprobe"),
+        have("exiftool"),
+        have("zbarimg"),
+        have("python3"),
+    );
     let reference = args.reference.clone().filter(|p| p.exists());
     let deadline = Deadline::after(Duration::from_secs(600));
-    let color_args = ["-j", "-n", "-s", "-ColorSpace", "-ColorType", "-PhotometricInterpretation", "-SamplesPerPixel", "-BitsPerSample", "-BitDepth", "-ColorComponents", "-ProfileDescription", "-ProfileID", "-Orientation", "--"];
-    let prov_args = ["-j", "-n", "-G1", "-s", "-Software", "-CreatorTool", "-DigitalSourceType", "-Description", "-Comment", "-Encoder", "-UserComment", "-Parameters", "-GenerationParameters", "-Prompt", "-Workflow", "--"];
+    let color_args = [
+        "-j",
+        "-n",
+        "-s",
+        "-ColorSpace",
+        "-ColorType",
+        "-PhotometricInterpretation",
+        "-SamplesPerPixel",
+        "-BitsPerSample",
+        "-BitDepth",
+        "-ColorComponents",
+        "-ProfileDescription",
+        "-ProfileID",
+        "-Orientation",
+        "--",
+    ];
+    let prov_args = [
+        "-j",
+        "-n",
+        "-G1",
+        "-s",
+        "-Software",
+        "-CreatorTool",
+        "-DigitalSourceType",
+        "-Description",
+        "-Comment",
+        "-Encoder",
+        "-UserComment",
+        "-Parameters",
+        "-GenerationParameters",
+        "-Prompt",
+        "-Workflow",
+        "--",
+    ];
 
     let mut rows = Vec::new();
     for (path, mime) in &files {
@@ -229,82 +326,205 @@ fn main() {
         let out_path = tmp.join("out").join(format!("{name}.out"));
         let kind = Kind::from_mime(mime).unwrap_or(Kind::Jpeg);
         let image_ops = *mime != "application/x-audeniq-signature";
-        type Op<'a> = (&'static str, Box<dyn FnMut() -> bool + 'a>, Option<Box<dyn FnMut() -> Vec<Command> + 'a>>);
+        type Op<'a> = (
+            &'static str,
+            Box<dyn FnMut() -> bool + 'a>,
+            Option<Box<dyn FnMut() -> Vec<Command> + 'a>>,
+        );
         let p = path.clone();
         let mut ops: Vec<Op> = Vec::new();
         if image_ops {
             let p1 = p.clone();
-            ops.push(("probe", Box::new(|| audeniq_photo::probe(&data).is_ok()), ffprobe.then(|| Box::new(move || {
-                let mut c = Command::new("ffprobe");
-                c.args(["-v", "error", "-protocol_whitelist", "file", "-show_format", "-show_streams", "-of", "json"]).arg(&p1);
-                vec![c]
-            }) as Box<dyn FnMut() -> Vec<Command>>)));
+            ops.push((
+                "probe",
+                Box::new(|| audeniq_photo::probe(&data).is_ok()),
+                ffprobe.then(|| {
+                    Box::new(move || {
+                        let mut c = Command::new("ffprobe");
+                        c.args([
+                            "-v",
+                            "error",
+                            "-protocol_whitelist",
+                            "file",
+                            "-show_format",
+                            "-show_streams",
+                            "-of",
+                            "json",
+                        ])
+                        .arg(&p1);
+                        vec![c]
+                    }) as Box<dyn FnMut() -> Vec<Command>>
+                }),
+            ));
             let p2 = p.clone();
-            ops.push(("color", Box::new(|| audeniq_photo::metadata(&data).map(|m| audeniq_photo::color_report(&m)).is_ok()), exiftool.then(|| Box::new(move || {
-                let mut c = Command::new("exiftool");
-                c.args(color_args).arg(&p2);
-                vec![c]
-            }) as Box<dyn FnMut() -> Vec<Command>>)));
+            ops.push((
+                "color",
+                Box::new(|| {
+                    audeniq_photo::metadata(&data)
+                        .map(|m| audeniq_photo::color_report(&m))
+                        .is_ok()
+                }),
+                exiftool.then(|| {
+                    Box::new(move || {
+                        let mut c = Command::new("exiftool");
+                        c.args(color_args).arg(&p2);
+                        vec![c]
+                    }) as Box<dyn FnMut() -> Vec<Command>>
+                }),
+            ));
             let p3 = p.clone();
-            ops.push(("provenance", Box::new(|| audeniq_photo::metadata(&data).map(|m| audeniq_photo::provenance_fields(&m)).is_ok()), exiftool.then(|| Box::new(move || {
-                let mut c = Command::new("exiftool");
-                c.args(prov_args).arg(&p3);
-                vec![c]
-            }) as Box<dyn FnMut() -> Vec<Command>>)));
+            ops.push((
+                "provenance",
+                Box::new(|| {
+                    audeniq_photo::metadata(&data)
+                        .map(|m| audeniq_photo::provenance_fields(&m))
+                        .is_ok()
+                }),
+                exiftool.then(|| {
+                    Box::new(move || {
+                        let mut c = Command::new("exiftool");
+                        c.args(prov_args).arg(&p3);
+                        vec![c]
+                    }) as Box<dyn FnMut() -> Vec<Command>>
+                }),
+            ));
             let p4 = p.clone();
-            ops.push(("qr", Box::new(|| audeniq_photo::qr_count(&data, &deadline).is_ok()), zbar.then(|| Box::new(move || {
-                let mut c = Command::new("zbarimg");
-                c.args(["--quiet", "--nodbus", "--xml", "-Sdisable", "-Sqrcode.enable", "--"]).arg(&p4);
-                vec![c]
-            }) as Box<dyn FnMut() -> Vec<Command>>)));
+            ops.push((
+                "qr",
+                Box::new(|| audeniq_photo::qr_count(&data, &deadline).is_ok()),
+                zbar.then(|| {
+                    Box::new(move || {
+                        let mut c = Command::new("zbarimg");
+                        c.args([
+                            "--quiet",
+                            "--nodbus",
+                            "--xml",
+                            "-Sdisable",
+                            "-Sqrcode.enable",
+                            "--",
+                        ])
+                        .arg(&p4);
+                        vec![c]
+                    }) as Box<dyn FnMut() -> Vec<Command>>
+                }),
+            ));
             let p5 = p.clone();
-            ops.push(("cover (all of the above)", Box::new(|| audeniq_photo::inspect_cover(&data, &deadline).is_ok()), (ffprobe && exiftool && zbar).then(|| Box::new(move || {
-                let mut a = Command::new("ffprobe");
-                a.args(["-v", "error", "-show_format", "-show_streams", "-of", "json"]).arg(&p5);
-                let mut b = Command::new("exiftool");
-                b.args(color_args).arg(&p5);
-                let mut c = Command::new("exiftool");
-                c.args(prov_args).arg(&p5);
-                let mut d = Command::new("zbarimg");
-                d.args(["--quiet", "--nodbus", "--xml", "-Sdisable", "-Sqrcode.enable", "--"]).arg(&p5);
-                vec![a, b, c, d]
-            }) as Box<dyn FnMut() -> Vec<Command>>)));
+            ops.push((
+                "cover (all of the above)",
+                Box::new(|| audeniq_photo::inspect_cover(&data, &deadline).is_ok()),
+                (ffprobe && exiftool && zbar).then(|| {
+                    Box::new(move || {
+                        let mut a = Command::new("ffprobe");
+                        a.args([
+                            "-v",
+                            "error",
+                            "-show_format",
+                            "-show_streams",
+                            "-of",
+                            "json",
+                        ])
+                        .arg(&p5);
+                        let mut b = Command::new("exiftool");
+                        b.args(color_args).arg(&p5);
+                        let mut c = Command::new("exiftool");
+                        c.args(prov_args).arg(&p5);
+                        let mut d = Command::new("zbarimg");
+                        d.args([
+                            "--quiet",
+                            "--nodbus",
+                            "--xml",
+                            "-Sdisable",
+                            "-Sqrcode.enable",
+                            "--",
+                        ])
+                        .arg(&p5);
+                        vec![a, b, c, d]
+                    }) as Box<dyn FnMut() -> Vec<Command>>
+                }),
+            ));
         }
         let (p6, o6) = (p.clone(), out_path.clone());
         let reference6 = reference.clone();
-        ops.push(("sanitize", Box::new(|| audeniq_photo::sanitize(&data, kind, &deadline).is_ok()), (python && reference6.is_some()).then(|| Box::new(move || {
-            let mut c = Command::new("python3");
-            c.arg(reference6.as_ref().unwrap()).arg(&p6).arg(&o6).arg(mime);
-            vec![c]
-        }) as Box<dyn FnMut() -> Vec<Command>>)));
+        ops.push((
+            "sanitize",
+            Box::new(|| audeniq_photo::sanitize(&data, kind, &deadline).is_ok()),
+            (python && reference6.is_some()).then(|| {
+                Box::new(move || {
+                    let mut c = Command::new("python3");
+                    c.arg(reference6.as_ref().unwrap())
+                        .arg(&p6)
+                        .arg(&o6)
+                        .arg(mime);
+                    vec![c]
+                }) as Box<dyn FnMut() -> Vec<Command>>
+            }),
+        ));
 
         for (op, mut ours, theirs) in ops {
             let _ = ours(); // warm-up
-            let rust = median((0..args.iterations).filter_map(|_| measure_inproc(&mut ours)).collect());
+            let rust = median(
+                (0..args.iterations)
+                    .filter_map(|_| measure_inproc(&mut ours))
+                    .collect(),
+            );
             let ext = theirs.and_then(|mut t| {
                 let _ = measure_cmds(&mut t());
-                median((0..args.iterations).filter_map(|_| measure_cmds(&mut t())).collect())
+                median(
+                    (0..args.iterations)
+                        .filter_map(|_| measure_cmds(&mut t()))
+                        .collect(),
+                )
             });
             rows.push((name.clone(), op, rust, ext));
         }
     }
 
     // Output sizes of the sanitized files (ours vs the reference script).
-    let mut sizes = String::from("\n| file | sanitized size (Rust) | sanitized size (Python/Pillow) |\n|---|---:|---:|\n");
+    let mut sizes = String::from(
+        "\n| file | sanitized size (Rust) | sanitized size (Python/Pillow) |\n|---|---:|---:|\n",
+    );
     for (path, mime) in &files {
         let data = std::fs::read(path).unwrap();
-        let ours = audeniq_photo::sanitize(&data, Kind::from_mime(mime).unwrap_or(Kind::Jpeg), &deadline).map(|v| v.len());
+        let ours = audeniq_photo::sanitize(
+            &data,
+            Kind::from_mime(mime).unwrap_or(Kind::Jpeg),
+            &deadline,
+        )
+        .map(|v| v.len());
         let theirs = reference.as_ref().filter(|_| python).and_then(|script| {
             let out = tmp.join("out").join("size.ref");
-            let ok = Command::new("python3").arg(script).arg(path).arg(&out).arg(mime).stdout(Stdio::null()).stderr(Stdio::null()).status().ok()?.success();
-            ok.then(|| std::fs::metadata(&out).map(|m| m.len() as usize).ok()).flatten()
+            let ok = Command::new("python3")
+                .arg(script)
+                .arg(path)
+                .arg(&out)
+                .arg(mime)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()?
+                .success();
+            ok.then(|| std::fs::metadata(&out).map(|m| m.len() as usize).ok())
+                .flatten()
         });
         let kib = |v: usize| format!("{:.0} KiB", v as f64 / 1024.0);
-        sizes.push_str(&format!("| {} | {} | {} |\n", path.file_name().unwrap().to_string_lossy(), ours.map_or("failed".into(), kib), theirs.map_or("—".into(), kib)));
+        sizes.push_str(&format!(
+            "| {} | {} | {} |\n",
+            path.file_name().unwrap().to_string_lossy(),
+            ours.map_or("failed".into(), kib),
+            theirs.map_or("—".into(), kib)
+        ));
     }
 
     // Throughput: sanitize every file `threads * iterations` times in parallel.
-    let jobs: Vec<(Vec<u8>, Kind)> = files.iter().map(|(p, m)| (std::fs::read(p).unwrap(), Kind::from_mime(m).unwrap_or(Kind::Jpeg))).collect();
+    let jobs: Vec<(Vec<u8>, Kind)> = files
+        .iter()
+        .map(|(p, m)| {
+            (
+                std::fs::read(p).unwrap(),
+                Kind::from_mime(m).unwrap_or(Kind::Jpeg),
+            )
+        })
+        .collect();
     let total = args.threads * args.iterations;
     let t0 = Instant::now();
     std::thread::scope(|s| {
@@ -328,7 +548,14 @@ fn main() {
                 s.spawn(move || {
                     for i in 0..args.iterations {
                         for (j, (p, m)) in files.iter().enumerate() {
-                            let _ = Command::new("python3").arg(script).arg(p).arg(tmp.join("out").join(format!("t{t}-{i}-{j}"))).arg(m).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                            let _ = Command::new("python3")
+                                .arg(script)
+                                .arg(p)
+                                .arg(tmp.join("out").join(format!("t{t}-{i}-{j}")))
+                                .arg(m)
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .status();
                         }
                     }
                 });
@@ -340,14 +567,24 @@ fn main() {
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     let fmt_ms = |d: Duration| {
         let v = ms(d);
-        if v < 1.0 { format!("{:.0} µs", v * 1000.0) } else { format!("{v:.1}") }
+        if v < 1.0 {
+            format!("{:.0} µs", v * 1000.0)
+        } else {
+            format!("{v:.1}")
+        }
     };
-    let mut md = String::from("| file | operation | Rust wall ms | Rust CPU ms | Rust peak RSS MB | external wall ms | external CPU ms | external peak RSS MB | speed-up |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut md = String::from(
+        "| file | operation | Rust wall ms | Rust CPU ms | Rust peak RSS MB | external wall ms | external CPU ms | external peak RSS MB | speed-up |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
     let mut jrows = Vec::new();
     for (file, op, r, e) in &rows {
-        let f = |s: &Option<Sample>, g: &dyn Fn(&Sample) -> String| s.as_ref().map_or("—".to_string(), g);
+        let f = |s: &Option<Sample>, g: &dyn Fn(&Sample) -> String| {
+            s.as_ref().map_or("—".to_string(), g)
+        };
         let speed = match (r, e) {
-            (Some(r), Some(e)) if r.wall.as_nanos() > 0 => format!("{:.1}×", e.wall.as_secs_f64() / r.wall.as_secs_f64()),
+            (Some(r), Some(e)) if r.wall.as_nanos() > 0 => {
+                format!("{:.1}×", e.wall.as_secs_f64() / r.wall.as_secs_f64())
+            }
             _ => "—".into(),
         };
         md.push_str(&format!(
@@ -359,14 +596,19 @@ fn main() {
             f(e, &|s| fmt_ms(s.cpu)),
             f(e, &|s| format!("{:.1}", s.rss_kb as f64 / 1024.0)),
         ));
-        let js = |s: &Option<Sample>| s.map(|s| json!({"wall_ms": ms(s.wall), "cpu_ms": ms(s.cpu), "peak_rss_kb": s.rss_kb}));
+        let js = |s: &Option<Sample>| {
+            s.map(|s| json!({"wall_ms": ms(s.wall), "cpu_ms": ms(s.cpu), "peak_rss_kb": s.rss_kb}))
+        };
         jrows.push(json!({"file": file, "operation": op, "rust": js(r), "external": js(e)}));
     }
     md.push_str(&format!(
         "\nSanitize throughput with {} threads: Rust {:.1} files/s{}\n",
         args.threads,
         rust_tput,
-        ext_tput.map_or(String::new(), |t| format!(", Python/Pillow {t:.1} files/s ({:.1}×)", rust_tput / t))
+        ext_tput.map_or(String::new(), |t| format!(
+            ", Python/Pillow {t:.1} files/s ({:.1}×)",
+            rust_tput / t
+        ))
     ));
     md.push_str(&sizes);
     md.push_str("\nRust peak RSS is the whole benchmark process (VmHWM, reset before each run); external figures are the child's ru_maxrss. CPU is user+system time.\n");

@@ -76,7 +76,11 @@ impl Curve {
         match self {
             Curve::Identity => x,
             Curve::Gamma(g) => {
-                if x <= 0.0 { 0.0 } else { x.powf(*g) }
+                if x <= 0.0 {
+                    0.0
+                } else {
+                    x.powf(*g)
+                }
             }
             Curve::Table(t) => {
                 // 16-bit evaluation as lcms does for tabulated curves.
@@ -132,7 +136,11 @@ fn invert_table(t: &[u16]) -> Vec<u16> {
                         (j as f64 + f) / (t.len() - 1) as f64
                     })
                 })
-                .unwrap_or(if (y < f64::from(t[0])) == ascending { 0.0 } else { 1.0 });
+                .unwrap_or(if (y < f64::from(t[0])) == ascending {
+                    0.0
+                } else {
+                    1.0
+                });
             saturate_word(x * 65535.0)
         })
         .collect()
@@ -156,27 +164,53 @@ fn parametric(ty: u16, p: &[f64; 7], x: f64) -> f64 {
             if x >= -b / a { pw(a * x + b) + c } else { c }
         }
         3 => {
-            if x >= d { pw(a * x + b) } else { c * x }
+            if x >= d {
+                pw(a * x + b)
+            } else {
+                c * x
+            }
         }
         _ => {
-            if x >= d { pw(a * x + b) + e } else { c * x + f }
+            if x >= d {
+                pw(a * x + b) + e
+            } else {
+                c * x + f
+            }
         }
     }
 }
 
 fn inverse_parametric(ty: u16, p: &[f64; 7], y: f64) -> f64 {
     let (g, a, b, c, d, e, f) = (p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
-    let root = |v: f64| if v <= 0.0 || g == 0.0 { 0.0 } else { v.powf(1.0 / g) };
+    let root = |v: f64| {
+        if v <= 0.0 || g == 0.0 {
+            0.0
+        } else {
+            v.powf(1.0 / g)
+        }
+    };
     match ty {
         0 => root(y),
         1 => {
-            if a == 0.0 { 0.0 } else { (root(y) - b) / a }
+            if a == 0.0 {
+                0.0
+            } else {
+                (root(y) - b) / a
+            }
         }
         2 => {
-            if a == 0.0 { 0.0 } else { (root(y - c) - b) / a }
+            if a == 0.0 {
+                0.0
+            } else {
+                (root(y - c) - b) / a
+            }
         }
         3 => {
-            let disc = if a * d + b <= 0.0 { 0.0 } else { (a * d + b).powf(g) };
+            let disc = if a * d + b <= 0.0 {
+                0.0
+            } else {
+                (a * d + b).powf(g)
+            };
             if y >= disc {
                 if a == 0.0 { 0.0 } else { (root(y) - b) / a }
             } else if c == 0.0 {

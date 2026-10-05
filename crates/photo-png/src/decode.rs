@@ -42,7 +42,13 @@ fn parse(data: &[u8], keep_idat: bool) -> Result<Parsed<'_>> {
                 if i.color_type == 0 || i.color_type == 4 {
                     return Err(Error::Invalid("PLTE in grayscale image"));
                 }
-                i.palette = chunk.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                i.palette = chunk
+                    .data
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
             }
             b"tRNS" => {
                 let ok = match i.color_type {
@@ -72,18 +78,20 @@ fn parse(data: &[u8], keep_idat: bool) -> Result<Parsed<'_>> {
                 seen_iend = true;
             }
             b"iCCP" => {
-                if i.icc_profile.is_none() && !seen_idat {
-                    if let Some(nul) = chunk.data.iter().position(|&b| b == 0) {
-                        let body = &chunk.data[nul + 1..];
-                        if body.first() == Some(&0) {
-                            let mut profile = Vec::new();
-                            // ICC profiles are small; 4 MiB is generous.
-                            if photo_deflate::inflate_zlib(&body[1..], &mut profile, 4 << 20, false)
-                                .is_ok()
-                            {
-                                i.icc_name = Some(chunk.data[..nul].iter().map(|&b| char::from(b)).collect());
-                                i.icc_profile = Some(profile);
-                            }
+                if i.icc_profile.is_none()
+                    && !seen_idat
+                    && let Some(nul) = chunk.data.iter().position(|&b| b == 0)
+                {
+                    let body = &chunk.data[nul + 1..];
+                    if body.first() == Some(&0) {
+                        let mut profile = Vec::new();
+                        // ICC profiles are small; 4 MiB is generous.
+                        if photo_deflate::inflate_zlib(&body[1..], &mut profile, 4 << 20, false)
+                            .is_ok()
+                        {
+                            i.icc_name =
+                                Some(chunk.data[..nul].iter().map(|&b| char::from(b)).collect());
+                            i.icc_profile = Some(profile);
                         }
                     }
                 }
@@ -108,8 +116,12 @@ fn parse(data: &[u8], keep_idat: bool) -> Result<Parsed<'_>> {
             }
             b"acTL" => {
                 if chunk.data.len() == 8 {
-                    i.animation_frames =
-                        Some(u32::from_be_bytes([chunk.data[0], chunk.data[1], chunk.data[2], chunk.data[3]]));
+                    i.animation_frames = Some(u32::from_be_bytes([
+                        chunk.data[0],
+                        chunk.data[1],
+                        chunk.data[2],
+                        chunk.data[3],
+                    ]));
                 }
             }
             _ => {
@@ -137,11 +149,22 @@ pub fn read_info(data: &[u8]) -> Result<Info> {
     parse(data, false).map(|p| p.info)
 }
 
-const ADAM7: [(usize, usize, usize, usize); 7] =
-    [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+const ADAM7: [(usize, usize, usize, usize); 7] = [
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+];
 
 fn pass_size(full: usize, start: usize, step: usize) -> usize {
-    if start >= full { 0 } else { (full - start).div_ceil(step) }
+    if start >= full {
+        0
+    } else {
+        (full - start).div_ceil(step)
+    }
 }
 
 fn row_bytes(width: usize, info: &Info) -> usize {
@@ -151,7 +174,11 @@ fn row_bytes(width: usize, info: &Info) -> usize {
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let p = i16::from(a) + i16::from(b) - i16::from(c);
-    let (pa, pb, pc) = ((p - i16::from(a)).abs(), (p - i16::from(b)).abs(), (p - i16::from(c)).abs());
+    let (pa, pb, pc) = (
+        (p - i16::from(a)).abs(),
+        (p - i16::from(b)).abs(),
+        (p - i16::from(c)).abs(),
+    );
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
@@ -227,7 +254,13 @@ fn expand(info: &Info, row: &[u8], w: usize, out: &mut Vec<u8>) {
     let depth = info.bit_depth as usize;
     match (info.color_type, depth) {
         (2 | 4 | 6, 8) | (0, 8) => out.extend_from_slice(&row[..w * info.channels()]),
-        (_, 16) => out.extend(row.chunks_exact(2).take(w * info.channels()).map(|s| s[0])),
+        (_, 16) => out.extend(
+            row.as_chunks::<2>()
+                .0
+                .iter()
+                .take(w * info.channels())
+                .map(|s| s[0]),
+        ),
         (0, d) => {
             let scale = 255 / ((1u16 << d) - 1) as u8;
             out.extend((0..w).map(|x| sample(row, x, d) * scale));
@@ -316,7 +349,15 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
         raw.truncate(h * rb);
         raw.shrink_to_fit();
         let (width, height) = (info.width, info.height);
-        return Ok((info, Image { width, height, format: fmt, data: raw }));
+        return Ok((
+            info,
+            Image {
+                width,
+                height,
+                format: fmt,
+                data: raw,
+            },
+        ));
     }
 
     let ch = fmt.channels();
@@ -335,7 +376,12 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
                 unfilter(filter, bpp, None, &mut raw[start + 1..start + 1 + rb])?;
             } else {
                 let (before, cur) = raw.split_at_mut(start);
-                unfilter(filter, bpp, Some(&before[start - rb..]), &mut cur[1..1 + rb])?;
+                unfilter(
+                    filter,
+                    bpp,
+                    Some(&before[start - rb..]),
+                    &mut cur[1..1 + rb],
+                )?;
             }
             expand(&info, &raw[start + 1..start + 1 + rb], pw, &mut scratch);
             let y = y0 + py * dy;
@@ -353,5 +399,13 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
     }
     drop(raw);
     let (width, height) = (info.width, info.height);
-    Ok((info, Image { width, height, format: fmt, data: out }))
+    Ok((
+        info,
+        Image {
+            width,
+            height,
+            format: fmt,
+            data: out,
+        },
+    ))
 }

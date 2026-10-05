@@ -15,20 +15,21 @@ pub(crate) enum DecodeError {
 
 fn mask_bit(mask: u8, i: usize, j: usize) -> bool {
     match mask {
-        0 => (i + j) % 2 == 0,
-        1 => i % 2 == 0,
-        2 => j % 3 == 0,
-        3 => (i + j) % 3 == 0,
-        4 => ((i / 2) + (j / 3)) % 2 == 0,
+        0 => (i + j).is_multiple_of(2),
+        1 => i.is_multiple_of(2),
+        2 => j.is_multiple_of(3),
+        3 => (i + j).is_multiple_of(3),
+        4 => ((i / 2) + (j / 3)).is_multiple_of(2),
         5 => (i * j) % 2 + (i * j) % 3 == 0,
-        6 => ((i * j) % 2 + (i * j) % 3) % 2 == 0,
-        _ => ((i * j) % 3 + (i + j) % 2) % 2 == 0,
+        6 => ((i * j) % 2 + (i * j) % 3).is_multiple_of(2),
+        _ => ((i * j) % 3 + (i + j) % 2).is_multiple_of(2),
     }
 }
 
 fn reserved(version: usize, i: usize, j: usize) -> bool {
     let size = version * 4 + 17;
-    if (i < 9 && j < 9) || (i + 8 >= size && j < 9) || (i < 9 && j + 8 >= size) || i == 6 || j == 6 {
+    if (i < 9 && j < 9) || (i + 8 >= size && j < 9) || (i < 9 && j + 8 >= size) || i == 6 || j == 6
+    {
         return true;
     }
     if version >= 7 && ((i < 6 && j + 11 >= size) || (i + 11 >= size && j < 6)) {
@@ -97,11 +98,13 @@ fn read_format(code: &Code, which: bool) -> Option<(u8, u8)> {
 
 pub(crate) fn decode(code: &Code) -> Result<usize, DecodeError> {
     let n = code.size;
-    if n < 21 || (n - 17) % 4 != 0 || (n - 17) / 4 > 40 {
+    if n < 21 || !(n - 17).is_multiple_of(4) || (n - 17) / 4 > 40 {
         return Err(DecodeError::InvalidGridSize);
     }
     let version = (n - 17) / 4;
-    let (ecc, mask) = read_format(code, false).or_else(|| read_format(code, true)).ok_or(DecodeError::Format)?;
+    let (ecc, mask) = read_format(code, false)
+        .or_else(|| read_format(code, true))
+        .ok_or(DecodeError::Format)?;
     // Codeword stream.
     let mut raw = Vec::with_capacity(n * n / 8);
     let mut acc = 0u8;
@@ -132,7 +135,13 @@ pub(crate) fn decode(code: &Code) -> Result<usize, DecodeError> {
         }
     }
     let (ec, c1, d1, c2, d2) = VERSIONS[version - 1].ecc[ecc as usize];
-    let (ec, c1, d1, c2, d2) = (ec as usize, c1 as usize, d1 as usize, c2 as usize, d2 as usize);
+    let (ec, c1, d1, c2, d2) = (
+        ec as usize,
+        c1 as usize,
+        d1 as usize,
+        c2 as usize,
+        d2 as usize,
+    );
     let blocks = c1 + c2;
     let total_data = c1 * d1 + c2 * d2;
     if raw.len() < total_data + ec * blocks {
@@ -144,7 +153,11 @@ pub(crate) fn decode(code: &Code) -> Result<usize, DecodeError> {
         let dw = if b < c1 { d1 } else { d2 };
         block.clear();
         for j in 0..dw {
-            let idx = if j < d1 { j * blocks + b } else { d1 * blocks + (b - c1) };
+            let idx = if j < d1 {
+                j * blocks + b
+            } else {
+                d1 * blocks + (b - c1)
+            };
             block.push(raw[idx]);
         }
         for j in 0..ec {
@@ -184,7 +197,13 @@ impl Bits<'_> {
 /// Walk the segments; returns the payload length in bytes/characters.
 fn validate_payload(data: &[u8], version: usize) -> Result<usize, DecodeError> {
     let mut b = Bits { d: data, pos: 0 };
-    let class = if version < 10 { 0 } else if version < 27 { 1 } else { 2 };
+    let class = if version < 10 {
+        0
+    } else if version < 27 {
+        1
+    } else {
+        2
+    };
     let mut chars = 0usize;
     while b.remaining() >= 4 {
         let mode = b.take(4).ok_or(DecodeError::Payload)?;
@@ -197,7 +216,15 @@ fn validate_payload(data: &[u8], version: usize) -> Result<usize, DecodeError> {
             7 => {
                 // ECI designator: 1, 2 or 3 bytes.
                 let first = b.take(8).ok_or(DecodeError::Payload)?;
-                let extra = if first & 0x80 == 0 { 0 } else if first & 0xC0 == 0x80 { 8 } else if first & 0xE0 == 0xC0 { 16 } else { return Err(DecodeError::Payload) };
+                let extra = if first & 0x80 == 0 {
+                    0
+                } else if first & 0xC0 == 0x80 {
+                    8
+                } else if first & 0xE0 == 0xC0 {
+                    16
+                } else {
+                    return Err(DecodeError::Payload);
+                };
                 b.take(extra).ok_or(DecodeError::Payload)?;
                 continue;
             }

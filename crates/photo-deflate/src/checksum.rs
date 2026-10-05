@@ -7,7 +7,11 @@ const fn crc_tables() -> [[u32; 256]; 8] {
         let mut c = n as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         t[0][n] = c;
@@ -122,7 +126,10 @@ mod tests {
     fn known_vectors() {
         assert_eq!(crc32(b""), 0);
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414F_A339
+        );
         assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
         let big = vec![0xFFu8; 100_000];
         let mut split = Adler32::new();

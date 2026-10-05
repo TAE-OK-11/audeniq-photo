@@ -5,7 +5,9 @@ use photo_core::{Error, Result};
 
 const MAX_ATOMS: usize = 100_000;
 const MAX_DEPTH: usize = 12;
-const XMP_UUID: [u8; 16] = [0xBE, 0x7A, 0xCF, 0xCB, 0x97, 0xA9, 0x42, 0xE8, 0x9C, 0x71, 0x99, 0x94, 0x91, 0xE3, 0xAF, 0xAC];
+const XMP_UUID: [u8; 16] = [
+    0xBE, 0x7A, 0xCF, 0xCB, 0x97, 0xA9, 0x42, 0xE8, 0x9C, 0x71, 0x99, 0x94, 0x91, 0xE3, 0xAF, 0xAC,
+];
 
 fn item_name(id: &[u8]) -> Option<String> {
     Some(
@@ -50,7 +52,9 @@ impl Walker<'_> {
             let kind = &d[pos + 4..pos + 8];
             let mut hdr = 8;
             if size == 1 {
-                let Some(b) = d.get(pos + 8..pos + 16) else { return };
+                let Some(b) = d.get(pos + 8..pos + 16) else {
+                    return;
+                };
                 size = u64::from_be_bytes(b.try_into().expect("8"));
                 hdr = 16;
             } else if size == 0 {
@@ -63,23 +67,32 @@ impl Walker<'_> {
             let body = &d[pos + hdr..pos + size as usize];
             pos += size as usize;
             match kind {
-                b"moov" | b"udta" | b"trak" | b"mdia" | b"minf" => self.atoms(body, depth + 1, kind),
+                b"moov" | b"udta" | b"trak" | b"mdia" | b"minf" => {
+                    self.atoms(body, depth + 1, kind)
+                }
                 b"meta" => {
                     // Full box (version/flags) in MP4; QuickTime omits it.
-                    let inner = if body.len() >= 8 && &body[4..8] == b"hdlr" { body } else { body.get(4..).unwrap_or(&[]) };
+                    let inner = if body.len() >= 8 && &body[4..8] == b"hdlr" {
+                        body
+                    } else {
+                        body.get(4..).unwrap_or(&[])
+                    };
                     self.atoms(inner, depth + 1, kind);
                 }
                 b"ilst" => self.ilst(body),
                 b"XMP_" => xmp::read(body, self.m),
-                b"uuid" if body.len() >= 16 && body[..16] == XMP_UUID => xmp::read(&body[16..], self.m),
+                b"uuid" if body.len() >= 16 && body[..16] == XMP_UUID => {
+                    xmp::read(&body[16..], self.m)
+                }
                 _ if parent == b"udta" && kind[0] == 0xA9 => {
                     // QuickTime UserData text: size(2) lang(2) text.
-                    if let Some(name) = item_name(kind) {
-                        if body.len() >= 4 {
-                            let n = u16::from_be_bytes([body[0], body[1]]) as usize;
-                            if let Some(t) = body.get(4..4 + n) {
-                                self.m.text("UserData", &name, clean(&String::from_utf8_lossy(t)));
-                            }
+                    if let Some(name) = item_name(kind)
+                        && body.len() >= 4
+                    {
+                        let n = u16::from_be_bytes([body[0], body[1]]) as usize;
+                        if let Some(t) = body.get(4..4 + n) {
+                            self.m
+                                .text("UserData", &name, clean(&String::from_utf8_lossy(t)));
                         }
                     }
                 }
@@ -118,7 +131,12 @@ impl Walker<'_> {
                         if ty == 1 {
                             value = Some(clean(&String::from_utf8_lossy(&b[8..])));
                         } else if ty == 2 {
-                            let u: Vec<u16> = b[8..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                            let u: Vec<u16> = b[8..]
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                                .collect();
                             value = Some(clean(&String::from_utf16_lossy(&u)));
                         }
                     }

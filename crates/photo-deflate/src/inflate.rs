@@ -22,7 +22,9 @@ const DIST_EXTRA: [u8; 30] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
     13,
 ];
-const CLEN_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const CLEN_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 struct Bits<'a> {
     data: &'a [u8],
@@ -35,7 +37,13 @@ struct Bits<'a> {
 
 impl<'a> Bits<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Bits { data, pos: 0, buf: 0, cnt: 0, overrun: 0 }
+        Bits {
+            data,
+            pos: 0,
+            buf: 0,
+            cnt: 0,
+            overrun: 0,
+        }
     }
 
     /// Guarantee at least 56 bits in the buffer.
@@ -89,7 +97,9 @@ impl<'a> Bits<'a> {
     }
 
     fn real_bits_left(&self) -> Result<u32> {
-        self.cnt.checked_sub(self.overrun * 8).ok_or(Error::Truncated)
+        self.cnt
+            .checked_sub(self.overrun * 8)
+            .ok_or(Error::Truncated)
     }
 
     fn align(&mut self) {
@@ -113,7 +123,11 @@ struct Table {
 
 impl Table {
     fn new(lengths: &[u8]) -> Result<Box<Table>> {
-        let mut t = Box::new(Table { fast: [0; 1 << FAST_BITS], count: [0; 16], symbols: [0; 288] });
+        let mut t = Box::new(Table {
+            fast: [0; 1 << FAST_BITS],
+            count: [0; 16],
+            symbols: [0; 288],
+        });
         for &l in lengths {
             t.count[l as usize] += 1;
         }
@@ -211,7 +225,12 @@ enum Stop {
     Limit,
 }
 
-fn inflate_blocks(bits: &mut Bits, out: &mut Vec<u8>, limit: usize, truncate: bool) -> Result<Stop> {
+fn inflate_blocks(
+    bits: &mut Bits,
+    out: &mut Vec<u8>,
+    limit: usize,
+    truncate: bool,
+) -> Result<Stop> {
     let start = out.len();
     loop {
         bits.refill()?;
@@ -280,7 +299,11 @@ fn stored(bits: &mut Bits, out: &mut Vec<u8>, limit: usize, truncate: bool) -> R
 
 #[inline]
 fn limit_hit(truncate: bool) -> Result<Stop> {
-    if truncate { Ok(Stop::Limit) } else { Err(Error::Limit("decompressed size")) }
+    if truncate {
+        Ok(Stop::Limit)
+    } else {
+        Err(Error::Limit("decompressed size"))
+    }
 }
 
 fn dynamic(bits: &mut Bits) -> Result<(Box<Table>, Box<Table>)> {
@@ -329,7 +352,10 @@ fn dynamic(bits: &mut Bits) -> Result<(Box<Table>, Box<Table>)> {
     if lengths[256] == 0 {
         return Err(Error::Invalid("missing end-of-block code"));
     }
-    Ok((Table::new(&lengths[..nlen])?, Table::new(&lengths[nlen..nlen + ndist])?))
+    Ok((
+        Table::new(&lengths[..nlen])?,
+        Table::new(&lengths[nlen..nlen + ndist])?,
+    ))
 }
 
 fn codes(
@@ -429,12 +455,20 @@ fn zlib_header(input: &[u8]) -> Result<()> {
 /// With `truncate == false` exceeding `limit` is an error. With
 /// `truncate == true` decoding stops once `limit` bytes are produced and the
 /// result reports `complete: false` (the checksum is not verified then).
-pub fn inflate_zlib(input: &[u8], out: &mut Vec<u8>, limit: usize, truncate: bool) -> Result<Inflated> {
+pub fn inflate_zlib(
+    input: &[u8],
+    out: &mut Vec<u8>,
+    limit: usize,
+    truncate: bool,
+) -> Result<Inflated> {
     zlib_header(input)?;
     let start = out.len();
     let mut bits = Bits::new(&input[2..]);
     if inflate_blocks(&mut bits, out, limit, truncate)? == Stop::Limit {
-        return Ok(Inflated { consumed: 2 + bits.pos, complete: false });
+        return Ok(Inflated {
+            consumed: 2 + bits.pos,
+            complete: false,
+        });
     }
     bits.align();
     let end = 2 + bits.consumed()?;
@@ -444,7 +478,10 @@ pub fn inflate_zlib(input: &[u8], out: &mut Vec<u8>, limit: usize, truncate: boo
     if adler.finish() != u32::from_be_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]) {
         return Err(Error::Invalid("zlib checksum mismatch"));
     }
-    Ok(Inflated { consumed: end + 4, complete: true })
+    Ok(Inflated {
+        consumed: end + 4,
+        complete: true,
+    })
 }
 
 /// Decode a complete zlib stream that must produce exactly `expected` bytes

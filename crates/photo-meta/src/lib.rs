@@ -13,11 +13,13 @@
 mod ape;
 mod audio;
 mod exif;
+mod file;
 mod id3;
 mod image;
 mod mp4;
 mod xmp;
 
+pub use file::read_path;
 use photo_core::{Error, Result};
 
 /// Bounds on what one file may contribute.
@@ -137,7 +139,11 @@ impl Metadata {
             return;
         }
         self.total += size;
-        self.tags.push(Tag { group: group.into(), name: name.into(), value });
+        self.tags.push(Tag {
+            group: group.into(),
+            name: name.into(),
+            value,
+        });
     }
 
     pub(crate) fn text(&mut self, group: &str, name: &str, s: String) {
@@ -169,7 +175,9 @@ impl Metadata {
                 // ExifTool -n prints ProfileID as its 16 bytes in decimal.
                 let id: Vec<String> = p.bytes()[84..100].iter().map(u8::to_string).collect();
                 self.text("ICC-header", "ProfileID", id.join(" "));
-                let cs = String::from_utf8_lossy(&p.color_space).trim_end().to_string();
+                let cs = String::from_utf8_lossy(&p.color_space)
+                    .trim_end()
+                    .to_string();
                 self.text("ICC-header", "ColorSpaceData", cs);
             }
             Err(_) => self.warn("invalid ICC profile"),
@@ -216,7 +224,8 @@ pub(crate) fn latin1(b: &[u8]) -> String {
 
 /// Text with trailing NULs and whitespace removed.
 pub(crate) fn clean(s: &str) -> String {
-    s.trim_end_matches(|c: char| c == '\0' || c.is_whitespace()).to_string()
+    s.trim_end_matches(|c: char| c == '\0' || c.is_whitespace())
+        .to_string()
 }
 
 /// Decode UTF-8 if valid, else Latin-1 (ExifTool's charset fallback).

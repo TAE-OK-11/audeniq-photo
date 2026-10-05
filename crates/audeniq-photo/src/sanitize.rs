@@ -47,12 +47,20 @@ fn exif_orientation(exif: &[u8]) -> Option<i64> {
     };
     let u16_at = |o: usize| -> Option<u16> {
         let b = exif.get(o..o + 2)?;
-        Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+        Some(if le {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        })
     };
     let u32_at = |o: usize| -> Option<u32> {
         let b = exif.get(o..o + 4)?;
         let a = [b[0], b[1], b[2], b[3]];
-        Some(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) })
+        Some(if le {
+            u32::from_le_bytes(a)
+        } else {
+            u32::from_be_bytes(a)
+        })
     };
     let ifd = u32_at(4)? as usize;
     let n = u16_at(ifd)? as usize;
@@ -74,7 +82,9 @@ fn xmp_orientation(xmp: &[u8]) -> Option<i64> {
     let s = std::str::from_utf8(xmp).ok()?;
     let i = s.find("tiff:Orientation")?;
     let rest = &s[i + 16..];
-    let rest = rest.trim_start_matches(|c: char| c == '=' || c == '>' || c == '"' || c == '\'' || c.is_whitespace());
+    let rest = rest.trim_start_matches(|c: char| {
+        c == '=' || c == '>' || c == '"' || c == '\'' || c.is_whitespace()
+    });
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
@@ -101,15 +111,26 @@ pub fn decode_image(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result
                 }
             }
             if orientation.is_none() {
-                orientation = info.texts.iter().find(|t| t.keyword == "XML:com.adobe.xmp").and_then(|t| xmp_orientation(t.text.as_bytes()));
+                orientation = info
+                    .texts
+                    .iter()
+                    .find(|t| t.keyword == "XML:com.adobe.xmp")
+                    .and_then(|t| xmp_orientation(t.text.as_bytes()));
             }
-            Ok(Decoded { format, image, icc_profile: info.icc_profile.filter(|p| !p.is_empty()), orientation })
+            Ok(Decoded {
+                format,
+                image,
+                icc_profile: info.icc_profile.filter(|p| !p.is_empty()),
+                orientation,
+            })
         }
         Format::Jpeg => {
             let (segs, _) = photo_jpeg::segments(data)?;
             // Pillow opens multi-picture JPEGs as MPO, which the sanitizer refused.
             let mpo = segs.iter().any(|s| {
-                s.marker == 0xE2 && s.data.starts_with(b"MPF\0") && mpf_images(&s.data[4..]).is_some_and(|n| n > 1)
+                s.marker == 0xE2
+                    && s.data.starts_with(b"MPF\0")
+                    && mpf_images(&s.data[4..]).is_some_and(|n| n > 1)
             });
             if mpo {
                 return Err(Error::Invalid("static JPEG/PNG required"));
@@ -120,7 +141,12 @@ pub fn decode_image(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result
                 .as_deref()
                 .and_then(exif_orientation)
                 .or_else(|| info.xmp.as_deref().and_then(xmp_orientation));
-            Ok(Decoded { format, image, icc_profile: info.icc_profile.filter(|p| !p.is_empty()), orientation })
+            Ok(Decoded {
+                format,
+                image,
+                icc_profile: info.icc_profile.filter(|p| !p.is_empty()),
+                orientation,
+            })
         }
     }
 }
@@ -131,11 +157,25 @@ fn mpf_images(tiff: &[u8]) -> Option<u32> {
         b"MM\0*" => false,
         _ => return None,
     };
-    let rd16 = |o: usize| tiff.get(o..o + 2).map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) });
-    let rd32 = |o: usize| tiff.get(o..o + 4).map(|b| {
-        let a = [b[0], b[1], b[2], b[3]];
-        if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
-    });
+    let rd16 = |o: usize| {
+        tiff.get(o..o + 2).map(|b| {
+            if le {
+                u16::from_le_bytes([b[0], b[1]])
+            } else {
+                u16::from_be_bytes([b[0], b[1]])
+            }
+        })
+    };
+    let rd32 = |o: usize| {
+        tiff.get(o..o + 4).map(|b| {
+            let a = [b[0], b[1], b[2], b[3]];
+            if le {
+                u32::from_le_bytes(a)
+            } else {
+                u32::from_be_bytes(a)
+            }
+        })
+    };
     let ifd = rd32(4)? as usize;
     let n = rd16(ifd)? as usize;
     for i in 0..n.min(100) {
@@ -173,7 +213,11 @@ fn raw_profile(text: &str) -> Option<Vec<u8>> {
 /// The script's `pixels()`: static JPEG/PNG → orientation-baked,
 /// sRGB, metadata-free RGB8 pixels.
 pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
-    let limits = Limits { max_pixels: MAX_PIXELS, max_alloc: 256 * 1024 * 1024, ..Limits::default() };
+    let limits = Limits {
+        max_pixels: MAX_PIXELS,
+        max_alloc: 256 * 1024 * 1024,
+        ..Limits::default()
+    };
     let d = decode_image(data, &limits, deadline)?;
     let mut image = orient::apply(d.image, d.orientation.unwrap_or(1));
     if image.width > MAX_SIDE || image.height > MAX_SIDE {
@@ -181,16 +225,30 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
     }
     deadline.check()?;
     if let Some(icc) = &d.icc_profile {
-        let profile = photo_icc::Profile::parse(icc).map_err(|_| Error::Invalid("invalid ICC profile"))?;
+        let profile =
+            photo_icc::Profile::parse(icc).map_err(|_| Error::Invalid("invalid ICC profile"))?;
         // Pillow modes: L/LA → gray, RGB/RGBA/P → RGB, CMYK.
         let (src, channels) = match image.format {
             PixelFormat::Gray8 => (std::mem::take(&mut image.data), 1),
-            PixelFormat::GrayAlpha8 => (image.data.chunks_exact(2).map(|p| p[0]).collect(), 1),
+            PixelFormat::GrayAlpha8 => (
+                image.data.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
+                1,
+            ),
             PixelFormat::Rgb8 => (std::mem::take(&mut image.data), 3),
-            PixelFormat::Rgba8 => (image.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect(), 3),
+            PixelFormat::Rgba8 => (
+                image
+                    .data
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [p[0], p[1], p[2]])
+                    .collect(),
+                3,
+            ),
             PixelFormat::Cmyk8 => (std::mem::take(&mut image.data), 4),
         };
-        let t = photo_icc::Transform::to_srgb(&profile, channels).map_err(|_| Error::Invalid("ICC profile does not apply to this image"))?;
+        let t = photo_icc::Transform::to_srgb(&profile, channels)
+            .map_err(|_| Error::Invalid("ICC profile does not apply to this image"))?;
         let pixels = image.width as usize * image.height as usize;
         let out = if channels == 3 {
             let mut v = src;
@@ -203,7 +261,12 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
             }
             v
         };
-        image = Image { width: image.width, height: image.height, format: PixelFormat::Rgb8, data: out };
+        image = Image {
+            width: image.width,
+            height: image.height,
+            format: PixelFormat::Rgb8,
+            data: out,
+        };
     } else {
         image = image.into_rgb8();
     }
@@ -236,6 +299,10 @@ pub fn encode_png(img: &Image) -> Result<Vec<u8>> {
 
 /// Encode RGB/gray pixels as a baseline JFIF JPEG (4:4:4 at q >= 90).
 pub fn encode_jpeg(img: &Image, quality: u8) -> Result<Vec<u8>> {
-    let sub = if quality >= 90 { photo_jpeg::Subsampling::S444 } else { photo_jpeg::Subsampling::S420 };
+    let sub = if quality >= 90 {
+        photo_jpeg::Subsampling::S444
+    } else {
+        photo_jpeg::Subsampling::S420
+    };
     Ok(photo_jpeg::encode(img, quality, sub)?)
 }

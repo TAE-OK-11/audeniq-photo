@@ -46,16 +46,66 @@ struct Config {
 
 // zlib's configuration_table (levels 1..=9).
 const CONFIGS: [Config; 10] = [
-    Config { good: 0, lazy: 0, nice: 0, chain: 0 },
-    Config { good: 4, lazy: 4, nice: 8, chain: 4 },
-    Config { good: 4, lazy: 5, nice: 16, chain: 8 },
-    Config { good: 4, lazy: 6, nice: 32, chain: 32 },
-    Config { good: 4, lazy: 4, nice: 16, chain: 16 },
-    Config { good: 8, lazy: 16, nice: 32, chain: 32 },
-    Config { good: 8, lazy: 16, nice: 128, chain: 128 },
-    Config { good: 8, lazy: 32, nice: 128, chain: 256 },
-    Config { good: 32, lazy: 128, nice: 258, chain: 1024 },
-    Config { good: 32, lazy: 258, nice: 258, chain: 4096 },
+    Config {
+        good: 0,
+        lazy: 0,
+        nice: 0,
+        chain: 0,
+    },
+    Config {
+        good: 4,
+        lazy: 4,
+        nice: 8,
+        chain: 4,
+    },
+    Config {
+        good: 4,
+        lazy: 5,
+        nice: 16,
+        chain: 8,
+    },
+    Config {
+        good: 4,
+        lazy: 6,
+        nice: 32,
+        chain: 32,
+    },
+    Config {
+        good: 4,
+        lazy: 4,
+        nice: 16,
+        chain: 16,
+    },
+    Config {
+        good: 8,
+        lazy: 16,
+        nice: 32,
+        chain: 32,
+    },
+    Config {
+        good: 8,
+        lazy: 16,
+        nice: 128,
+        chain: 128,
+    },
+    Config {
+        good: 8,
+        lazy: 32,
+        nice: 128,
+        chain: 256,
+    },
+    Config {
+        good: 32,
+        lazy: 128,
+        nice: 258,
+        chain: 1024,
+    },
+    Config {
+        good: 32,
+        lazy: 258,
+        nice: 258,
+        chain: 4096,
+    },
 ];
 
 const fn length_codes() -> [u8; 256] {
@@ -93,7 +143,9 @@ const DIST_EXTRA: [u8; 30] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
     13,
 ];
-const CLEN_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+const CLEN_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
 
 #[inline]
 fn dist_code(dist: usize) -> usize {
@@ -200,7 +252,11 @@ impl Compressor {
             win: Vec::with_capacity(if lz { 2 * W + CHUNK + MIN_LOOKAHEAD } else { 0 }),
             base: 0,
             pos: 0,
-            head: if lz { vec![0; 1 << HASH4_BITS] } else { Vec::new() },
+            head: if lz {
+                vec![0; 1 << HASH4_BITS]
+            } else {
+                Vec::new()
+            },
             prev: if lz { vec![0; W] } else { Vec::new() },
             pending: false,
             pending_len: 0,
@@ -383,14 +439,24 @@ impl Compressor {
                 cand = Self::insert(&mut self.head, &mut self.prev, &self.win, self.base, p);
             }
             if greedy {
-                let (len, dist) = if cand != 0 && max_len >= MIN_MATCH { self.longest(p, cand, 0, max_len) } else { (0, 0) };
+                let (len, dist) = if cand != 0 && max_len >= MIN_MATCH {
+                    self.longest(p, cand, 0, max_len)
+                } else {
+                    (0, 0)
+                };
                 if len >= MIN_MATCH {
                     self.matched(dist, len);
                     // zlib deflate_fast: insert inside short matches only.
                     if len <= lazy_limit {
                         for q in p + 1..p + len {
                             if q + 4 <= end {
-                                Self::insert(&mut self.head, &mut self.prev, &self.win, self.base, q);
+                                Self::insert(
+                                    &mut self.head,
+                                    &mut self.prev,
+                                    &self.win,
+                                    self.base,
+                                    q,
+                                );
                             }
                         }
                     }
@@ -406,8 +472,16 @@ impl Compressor {
                 continue;
             }
             // Lazy matching (zlib deflate_slow).
-            let (len, dist) = if cand != 0 && max_len >= MIN_MATCH && (!self.pending || self.pending_len < lazy_limit) {
-                self.longest(p, cand, if self.pending { self.pending_len } else { 0 }, max_len)
+            let (len, dist) = if cand != 0
+                && max_len >= MIN_MATCH
+                && (!self.pending || self.pending_len < lazy_limit)
+            {
+                self.longest(
+                    p,
+                    cand,
+                    if self.pending { self.pending_len } else { 0 },
+                    max_len,
+                )
             } else {
                 (0, 0)
             };
@@ -455,7 +529,8 @@ impl Compressor {
         let lc = usize::from(LEN_CODE[len - MIN_MATCH]);
         self.lit_freq[257 + lc] += 1;
         self.dist_freq[dist_code(dist)] += 1;
-        self.syms.push(MATCH_FLAG | ((dist as u32) << 8) | (len - MIN_MATCH) as u32);
+        self.syms
+            .push(MATCH_FLAG | ((dist as u32) << 8) | (len - MIN_MATCH) as u32);
     }
 
     fn flush_block(&mut self, last: bool, out: &mut Vec<u8>) {
@@ -492,7 +567,13 @@ impl Compressor {
         }
         let mut cl_len = [0u8; 19];
         build_lengths(&cl_freq, 7, &mut cl_len);
-        let hclen = 4.max(19 - CLEN_ORDER.iter().rev().take_while(|&&i| cl_len[i] == 0).count());
+        let hclen = 4.max(
+            19 - CLEN_ORDER
+                .iter()
+                .rev()
+                .take_while(|&&i| cl_len[i] == 0)
+                .count(),
+        );
 
         let mut dyn_bits: u64 = 14 + 3 * hclen as u64;
         for &(sym, _) in &rle {
@@ -560,7 +641,11 @@ impl Compressor {
                 bw.put(out, lc[257 + code], u32::from(ll[257 + code]));
                 let e = u32::from(LEN_EXTRA[code]);
                 if e > 0 {
-                    bw.put(out, (len_m3 + MIN_MATCH - usize::from(LEN_BASE[code])) as u32, e);
+                    bw.put(
+                        out,
+                        (len_m3 + MIN_MATCH - usize::from(LEN_BASE[code])) as u32,
+                        e,
+                    );
                 }
                 let d = dist_code(dist);
                 bw.put(out, dc[d], u32::from(dl[d]));
@@ -656,8 +741,12 @@ fn rle_lengths(l: &[u8]) -> Vec<(u8, u8)> {
 /// Length-limited Huffman code lengths for `freq` (miniz algorithm).
 fn build_lengths(freq: &[u32], max_len: usize, out: &mut [u8]) {
     out.iter_mut().for_each(|l| *l = 0);
-    let mut syms: Vec<(u64, usize)> =
-        freq.iter().enumerate().filter(|&(_, &f)| f > 0).map(|(i, &f)| (u64::from(f), i)).collect();
+    let mut syms: Vec<(u64, usize)> = freq
+        .iter()
+        .enumerate()
+        .filter(|&(_, &f)| f > 0)
+        .map(|(i, &f)| (u64::from(f), i))
+        .collect();
     match syms.len() {
         0 => return,
         1 => {
@@ -794,7 +883,14 @@ mod tests {
         mixed.extend(std::iter::repeat_n(0u8, 100_000));
         mixed.extend(noise(5, 9));
         for level in 0..=9 {
-            for data in [&b""[..], b"a", b"abcabcabcabc", &text, &mixed, &noise(200_000, 3)] {
+            for data in [
+                &b""[..],
+                b"a",
+                b"abcabcabcabc",
+                &text,
+                &mixed,
+                &noise(200_000, 3),
+            ] {
                 roundtrip(data, Level::new(level));
             }
         }

@@ -2,7 +2,12 @@
 use audeniq_photo::{Deadline, Kind, PixelFormat, sanitize};
 
 fn png_rgb(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
-    let img = audeniq_photo::Image { width: w, height: h, format: PixelFormat::Rgb8, data: rgb.repeat((w * h) as usize) };
+    let img = audeniq_photo::Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data: rgb.repeat((w * h) as usize),
+    };
     photo_png::encode(&img, photo_deflate::Level::DEFAULT).unwrap()
 }
 
@@ -25,7 +30,11 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn png_metadata_and_appended_payload_are_removed() {
-    let mut src = insert_chunk(&png_rgb(32, 32, [255, 0, 0]), b"tEXt", b"Script\0MALICIOUS_MARKER");
+    let mut src = insert_chunk(
+        &png_rgb(32, 32, [255, 0, 0]),
+        b"tEXt",
+        b"Script\0MALICIOUS_MARKER",
+    );
     src.extend_from_slice(b"<script>MALICIOUS_MARKER</script>");
     let out = sanitize(&src, Kind::Png, &Deadline::NONE).unwrap();
     assert!(!contains(&out, b"MALICIOUS_MARKER"));
@@ -49,7 +58,12 @@ fn animated_and_oversized_images_are_rejected() {
 #[test]
 fn html_and_archives_are_never_accepted() {
     let src = b"<script>alert(1)</script>";
-    for mime in ["text/html", "image/svg+xml", "application/zip", "application/msword"] {
+    for mime in [
+        "text/html",
+        "image/svg+xml",
+        "application/zip",
+        "application/msword",
+    ] {
         assert!(Kind::from_mime(mime).is_none());
     }
     assert!(sanitize(src, Kind::Png, &Deadline::NONE).is_err());
@@ -75,7 +89,12 @@ fn signature_crc_and_exact_pixels_and_no_hidden_metadata() {
 fn hostile_inputs_never_panic() {
     // Mutations of valid files must fail cleanly or succeed, never panic.
     let png = png_rgb(40, 30, [10, 200, 30]);
-    let img = audeniq_photo::Image { width: 40, height: 30, format: PixelFormat::Rgb8, data: (0..3600u32).map(|i| (i * 7) as u8).collect() };
+    let img = audeniq_photo::Image {
+        width: 40,
+        height: 30,
+        format: PixelFormat::Rgb8,
+        data: (0..3600u32).map(|i| (i * 7) as u8).collect(),
+    };
     let jpg = photo_jpeg::encode(&img, 80, photo_jpeg::Subsampling::S420).unwrap();
     let mut x = 0x1234_5678u32;
     for base in [&png, &jpg] {
@@ -87,13 +106,16 @@ fn hostile_inputs_never_panic() {
                 m[i] = (x >> 3) as u8;
             }
             x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            if x % 7 == 0 {
+            if x.is_multiple_of(7) {
                 let cut = (x as usize >> 4) % m.len();
                 m.truncate(cut);
             }
             for kind in [Kind::Png, Kind::Jpeg] {
                 let r = sanitize(&m, kind, &Deadline::NONE);
-                assert!(!matches!(r, Err(audeniq_photo::Error::Internal)), "decoder panicked");
+                assert!(
+                    !matches!(r, Err(audeniq_photo::Error::Internal)),
+                    "decoder panicked"
+                );
             }
             let _ = audeniq_photo::metadata(&m);
             let _ = audeniq_photo::probe(&m);

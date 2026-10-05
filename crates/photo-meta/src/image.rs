@@ -12,19 +12,37 @@ pub(crate) fn jpeg(data: &[u8], m: &mut Metadata) -> Result<()> {
         match s.marker {
             0xC0..=0xCF if !matches!(s.marker, 0xC4 | 0xC8 | 0xCC) => {
                 if d.len() >= 6 {
-                    m.push("File", "EncodingProcess", Value::Int(i64::from(s.marker - 0xC0)));
+                    m.push(
+                        "File",
+                        "EncodingProcess",
+                        Value::Int(i64::from(s.marker - 0xC0)),
+                    );
                     m.push("File", "BitsPerSample", Value::Int(i64::from(d[0])));
-                    m.push("File", "ImageHeight", Value::Int(i64::from(u16::from_be_bytes([d[1], d[2]]))));
-                    m.push("File", "ImageWidth", Value::Int(i64::from(u16::from_be_bytes([d[3], d[4]]))));
+                    m.push(
+                        "File",
+                        "ImageHeight",
+                        Value::Int(i64::from(u16::from_be_bytes([d[1], d[2]]))),
+                    );
+                    m.push(
+                        "File",
+                        "ImageWidth",
+                        Value::Int(i64::from(u16::from_be_bytes([d[3], d[4]]))),
+                    );
                     m.push("File", "ColorComponents", Value::Int(i64::from(d[5])));
                 }
             }
             0xE0 if d.starts_with(b"JFIF\0") && d.len() >= 7 => {
-                m.push("JFIF", "JFIFVersion", Value::Text(format!("{}.{:02}", d[5], d[6])));
+                m.push(
+                    "JFIF",
+                    "JFIFVersion",
+                    Value::Text(format!("{}.{:02}", d[5], d[6])),
+                );
             }
             0xE1 if d.starts_with(b"Exif\0") && d.len() > 6 => exif::read(&d[6..], m),
             0xE1 if d.starts_with(b"http://ns.adobe.com/xap/1.0/\0") => xmp::read(&d[29..], m),
-            0xE1 if d.starts_with(b"http://ns.adobe.com/xmp/extension/\0") && d.len() >= 35 + 40 => {
+            0xE1 if d.starts_with(b"http://ns.adobe.com/xmp/extension/\0")
+                && d.len() >= 35 + 40 =>
+            {
                 let guid = d[35..67].to_vec();
                 let total = u32::from_be_bytes([d[67], d[68], d[69], d[70]]) as usize;
                 let off = u32::from_be_bytes([d[71], d[72], d[73], d[74]]) as usize;
@@ -38,7 +56,9 @@ pub(crate) fn jpeg(data: &[u8], m: &mut Metadata) -> Result<()> {
                     entry.1[off..off + chunk.len()].copy_from_slice(chunk);
                 }
             }
-            0xE2 if d.starts_with(b"ICC_PROFILE\0") && d.len() >= 14 => icc.push((d[12], d[13], &d[14..])),
+            0xE2 if d.starts_with(b"ICC_PROFILE\0") && d.len() >= 14 => {
+                icc.push((d[12], d[13], &d[14..]))
+            }
             0xEE if d.starts_with(b"Adobe") && d.len() >= 12 => {
                 m.push("Adobe", "ColorTransform", Value::Int(i64::from(d[11])));
             }
@@ -118,26 +138,48 @@ pub(crate) fn png(data: &[u8], m: &mut Metadata) -> Result<()> {
         first = false;
         match &kind {
             b"IHDR" if body.len() == 13 => {
-                let u = |o: usize| i64::from(u32::from_be_bytes(body[o..o + 4].try_into().expect("4")));
+                let u =
+                    |o: usize| i64::from(u32::from_be_bytes(body[o..o + 4].try_into().expect("4")));
                 m.push("PNG", "ImageWidth", Value::Int(u(0)));
                 m.push("PNG", "ImageHeight", Value::Int(u(4)));
-                for (i, n) in ["BitDepth", "ColorType", "Compression", "Filter", "Interlace"].iter().enumerate() {
+                for (i, n) in [
+                    "BitDepth",
+                    "ColorType",
+                    "Compression",
+                    "Filter",
+                    "Interlace",
+                ]
+                .iter()
+                .enumerate()
+                {
                     m.push("PNG", *n, Value::Int(i64::from(body[8 + i])));
                 }
             }
             b"gAMA" if body.len() == 4 => {
                 let g = f64::from(u32::from_be_bytes(body.try_into().expect("4")));
                 if g > 0.0 {
-                    m.push("PNG", "Gamma", Value::Real((100_000.0 / g * 1e5).round() / 1e5));
+                    m.push(
+                        "PNG",
+                        "Gamma",
+                        Value::Real((100_000.0 / g * 1e5).round() / 1e5),
+                    );
                 }
             }
-            b"sRGB" if body.len() == 1 => m.push("PNG", "SRGBRendering", Value::Int(i64::from(body[0]))),
+            b"sRGB" if body.len() == 1 => {
+                m.push("PNG", "SRGBRendering", Value::Int(i64::from(body[0])))
+            }
             b"iCCP" => {
                 if let Some(nul) = body.iter().position(|&b| b == 0) {
                     m.text("PNG", "ProfileName", latin1(&body[..nul]));
                     let mut profile = Vec::new();
                     if body.get(nul + 1) == Some(&0)
-                        && photo_deflate::inflate_zlib(&body[nul + 2..], &mut profile, 4 << 20, false).is_ok()
+                        && photo_deflate::inflate_zlib(
+                            &body[nul + 2..],
+                            &mut profile,
+                            4 << 20,
+                            false,
+                        )
+                        .is_ok()
                     {
                         m.icc(&profile);
                     } else {

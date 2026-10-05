@@ -79,7 +79,11 @@ struct Recip {
 
 fn reciprocal(divisor: u32) -> Recip {
     if divisor == 1 {
-        return Recip { recip: 1, corr: 0, shift: 0 };
+        return Recip {
+            recip: 1,
+            corr: 0,
+            shift: 0,
+        };
     }
     let b = 31 - divisor.leading_zeros();
     let mut r = 16 + b;
@@ -94,7 +98,11 @@ fn reciprocal(divisor: u32) -> Recip {
     } else {
         fq += 1;
     }
-    Recip { recip: fq, corr: c, shift: r }
+    Recip {
+        recip: fq,
+        corr: c,
+        shift: r,
+    }
 }
 
 const CONST_BITS: i32 = 13;
@@ -139,11 +147,21 @@ fn fdct_islow(d: &mut [i32; 64]) {
         let tmp13 = sub(tmp0, tmp3);
         let tmp11 = add(tmp1, tmp2);
         let tmp12 = sub(tmp1, tmp2);
-        let n = if first { CONST_BITS - PASS1_BITS } else { CONST_BITS + PASS1_BITS };
-        let (o0, o4) = if first {
-            (std::array::from_fn(|i| (tmp10[i] + tmp11[i]) << PASS1_BITS), std::array::from_fn(|i| (tmp10[i] - tmp11[i]) << PASS1_BITS))
+        let n = if first {
+            CONST_BITS - PASS1_BITS
         } else {
-            (ds(add(tmp10, tmp11), PASS1_BITS), ds(sub(tmp10, tmp11), PASS1_BITS))
+            CONST_BITS + PASS1_BITS
+        };
+        let (o0, o4) = if first {
+            (
+                std::array::from_fn(|i| (tmp10[i] + tmp11[i]) << PASS1_BITS),
+                std::array::from_fn(|i| (tmp10[i] - tmp11[i]) << PASS1_BITS),
+            )
+        } else {
+            (
+                ds(add(tmp10, tmp11), PASS1_BITS),
+                ds(sub(tmp10, tmp11), PASS1_BITS),
+            )
         };
         let z1 = mul(add(tmp12, tmp13), 4433);
         let o2 = ds(add(z1, mul(tmp13, 6270)), n);
@@ -184,7 +202,10 @@ struct HuffCodes {
 }
 
 fn huff_codes(bits: &[u8; 16], vals: &[u8]) -> HuffCodes {
-    let mut h = HuffCodes { code: [0; 256], size: [0; 256] };
+    let mut h = HuffCodes {
+        code: [0; 256],
+        size: [0; 256],
+    };
     let mut code = 0u16;
     let mut k = 0;
     for l in 1..=16u8 {
@@ -267,7 +288,10 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(quality: u8, subsampling: Subsampling) -> Self {
-        Encoder { quality, subsampling }
+        Encoder {
+            quality,
+            subsampling,
+        }
     }
 
     pub fn encode(&self, img: &Image) -> Result<Vec<u8>> {
@@ -280,8 +304,16 @@ impl Encoder {
             return Err(Error::Invalid("JPEG dimensions"));
         }
         let (w, h) = (img.width as usize, img.height as usize);
-        let sub = if gray { Subsampling::S444 } else { self.subsampling };
-        let (hs, vs) = if sub == Subsampling::S420 { (2usize, 2usize) } else { (1, 1) };
+        let sub = if gray {
+            Subsampling::S444
+        } else {
+            self.subsampling
+        };
+        let (hs, vs) = if sub == Subsampling::S420 {
+            (2usize, 2usize)
+        } else {
+            (1, 1)
+        };
         let ncomp = if gray { 1 } else { 3 };
         let lum = quant_table(&STD_LUM, self.quality);
         let chr = quant_table(&STD_CHR, self.quality);
@@ -289,7 +321,9 @@ impl Encoder {
         let mut out = Vec::with_capacity(w * h / 4 + 1024);
         out.extend_from_slice(&[0xFF, 0xD8]);
         // JFIF APP0: version 1.01, aspect 1:1, no thumbnail (jcmarker.c).
-        out.extend_from_slice(&[0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+        out.extend_from_slice(&[
+            0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+        ]);
         for (i, t) in [lum, chr].iter().enumerate().take(if gray { 1 } else { 2 }) {
             out.extend_from_slice(&[0xFF, 0xDB, 0, 67, i as u8]);
             for k in 0..64 {
@@ -361,7 +395,12 @@ impl Encoder {
                 } else {
                     let (p0, rest) = planes.split_at_mut(1);
                     let (p1, p2) = rest.split_at_mut(1);
-                    rgb_to_ycc(src, &mut p0[0][row..row + w], &mut p1[0][row..row + w], &mut p2[0][row..row + w]);
+                    rgb_to_ycc(
+                        src,
+                        &mut p0[0][row..row + w],
+                        &mut p1[0][row..row + w],
+                        &mut p2[0][row..row + w],
+                    );
                 }
                 for p in planes.iter_mut() {
                     let edge = p[row + w - 1];
@@ -378,7 +417,10 @@ impl Encoder {
                             let r1 = &p[(2 * oy + 1) * pw..(2 * oy + 2) * pw];
                             let mut bias = 1u32;
                             for ox in 0..cw {
-                                let s = u32::from(r0[2 * ox]) + u32::from(r0[2 * ox + 1]) + u32::from(r1[2 * ox]) + u32::from(r1[2 * ox + 1]);
+                                let s = u32::from(r0[2 * ox])
+                                    + u32::from(r0[2 * ox + 1])
+                                    + u32::from(r1[2 * ox])
+                                    + u32::from(r1[2 * ox + 1]);
                                 chroma[c][oy * cw + ox] = ((s + bias) >> 2) as u8;
                                 bias ^= 3;
                             }
@@ -437,7 +479,14 @@ fn rgb_to_ycc(src: &[u8], y: &mut [u8], cb: &mut [u8], cr: &mut [u8]) {
     }
 }
 
-fn encode_block(bw: &mut BitWriter, c: &mut Comp, plane: &[u8], stride: usize, x0: usize, y0: usize) -> i32 {
+fn encode_block(
+    bw: &mut BitWriter,
+    c: &mut Comp,
+    plane: &[u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+) -> i32 {
     let mut d = [0i32; 64];
     for y in 0..8 {
         for x in 0..8 {
@@ -472,7 +521,10 @@ fn emit(bw: &mut BitWriter, c: &mut Comp, q: &[i32; 64]) {
     c.pred = q[0];
     let (nbits, bits) = magnitude(diff);
     let size = u32::from(c.dc.size[nbits as usize]);
-    bw.put((u32::from(c.dc.code[nbits as usize]) << nbits) | bits, size + nbits);
+    bw.put(
+        (u32::from(c.dc.code[nbits as usize]) << nbits) | bits,
+        size + nbits,
+    );
     // AC: zigzag order plus a bitmap of non-zero coefficients, so runs of
     // zeros are skipped with one trailing-zeros count (as libjpeg-turbo).
     let mut zz = [0i32; 64];
@@ -523,8 +575,14 @@ mod tests {
     use super::*;
     #[test]
     fn table_sizes_and_quality_scaling() {
-        assert_eq!(AC_LUM_BITS.iter().map(|&b| b as usize).sum::<usize>(), AC_LUM_VALS.len());
-        assert_eq!(AC_CHR_BITS.iter().map(|&b| b as usize).sum::<usize>(), AC_CHR_VALS.len());
+        assert_eq!(
+            AC_LUM_BITS.iter().map(|&b| b as usize).sum::<usize>(),
+            AC_LUM_VALS.len()
+        );
+        assert_eq!(
+            AC_CHR_BITS.iter().map(|&b| b as usize).sum::<usize>(),
+            AC_CHR_VALS.len()
+        );
         assert_eq!(quant_table(&STD_LUM, 50), STD_LUM);
         assert_eq!(quant_table(&STD_LUM, 100), [1; 64]);
         assert_eq!(quant_table(&STD_LUM, 95)[0], 2);
@@ -536,7 +594,11 @@ mod tests {
             let d = q * 8;
             let r = reciprocal(d);
             for x in 0..=32767u32 {
-                let got = if d == 1 { x } else { ((x + r.corr) * r.recip) >> r.shift };
+                let got = if d == 1 {
+                    x
+                } else {
+                    ((x + r.corr) * r.recip) >> r.shift
+                };
                 let want = (x + d / 2) / d;
                 assert!(got.abs_diff(want) <= 1, "q={q} x={x}");
             }

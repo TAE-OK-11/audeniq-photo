@@ -66,12 +66,19 @@ print("\n".join(cases))
 fn counts_match_zbarimg() {
     let dir = std::env::temp_dir().join(format!("photo-qr-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let Ok(out) = Command::new("python3").args(["-c", SCRIPT]).arg(&dir).output() else {
+    let Ok(out) = Command::new("python3")
+        .args(["-c", SCRIPT])
+        .arg(&dir)
+        .output()
+    else {
         eprintln!("python3 unavailable; skipping");
         return;
     };
     if !out.status.success() {
-        eprintln!("fixtures unavailable; skipping: {}", String::from_utf8_lossy(&out.stderr));
+        eprintln!(
+            "fixtures unavailable; skipping: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         return;
     }
     let zbar_ok = Command::new("zbarimg").arg("--version").output().is_ok();
@@ -85,16 +92,29 @@ fn counts_match_zbarimg() {
         let (_, img) = photo_png::decode(&data, &Limits::default(), &Deadline::NONE).unwrap();
         let gray = photo_qr::to_gray(&img.data, img.format.channels());
         let t = std::time::Instant::now();
-        let s = photo_qr::scan(&gray, img.width as usize, img.height as usize, &Deadline::NONE).unwrap();
+        let s = photo_qr::scan(
+            &gray,
+            img.width as usize,
+            img.height as usize,
+            &Deadline::NONE,
+        )
+        .unwrap();
         let ours_ms = t.elapsed().as_secs_f64() * 1000.0;
         let zbar = if zbar_ok {
-            let o = Command::new("zbarimg").args(["--quiet", "--raw", "-Sdisable", "-Sqrcode.enable"]).arg(&path).output().unwrap();
+            let o = Command::new("zbarimg")
+                .args(["--quiet", "--raw", "-Sdisable", "-Sqrcode.enable"])
+                .arg(&path)
+                .output()
+                .unwrap();
             // Each decoded symbol prints one line (payloads here are single-line).
             Some(String::from_utf8_lossy(&o.stdout).lines().count())
         } else {
             None
         };
-        report.push(format!("{name}: expected {expected} ours {} (cand {}) zbar {:?} [{ours_ms:.1} ms]", s.decoded, s.candidates, zbar));
+        report.push(format!(
+            "{name}: expected {expected} ours {} (cand {}) zbar {:?} [{ours_ms:.1} ms]",
+            s.decoded, s.candidates, zbar
+        ));
         if s.decoded != expected {
             mismatches.push(name.to_string());
         }

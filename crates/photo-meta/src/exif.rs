@@ -60,12 +60,20 @@ struct Tiff<'a> {
 impl<'a> Tiff<'a> {
     fn u16(&self, o: usize) -> Option<u16> {
         let b = self.d.get(o..o + 2)?;
-        Some(if self.le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+        Some(if self.le {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        })
     }
     fn u32(&self, o: usize) -> Option<u32> {
         let b = self.d.get(o..o + 4)?;
         let a = [b[0], b[1], b[2], b[3]];
-        Some(if self.le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) })
+        Some(if self.le {
+            u32::from_le_bytes(a)
+        } else {
+            u32::from_be_bytes(a)
+        })
     }
 }
 
@@ -109,7 +117,13 @@ pub(crate) fn read(d: &[u8], m: &mut Metadata) {
 }
 
 /// Read one IFD; returns the next-IFD offset.
-fn ifd(t: Tiff, off: usize, group: &str, m: &mut Metadata, seen: &mut HashSet<usize>) -> Option<usize> {
+fn ifd(
+    t: Tiff,
+    off: usize,
+    group: &str,
+    m: &mut Metadata,
+    seen: &mut HashSet<usize>,
+) -> Option<usize> {
     if !seen.insert(off) {
         m.warn("EXIF IFD loop");
         return None;
@@ -126,8 +140,14 @@ fn ifd(t: Tiff, off: usize, group: &str, m: &mut Metadata, seen: &mut HashSet<us
             return None;
         };
         let Some(size) = type_size(ty) else { continue };
-        let Some(total) = (count as usize).checked_mul(size) else { continue };
-        let data_off = if total <= 4 { e + 8 } else { t.u32(e + 8)? as usize };
+        let Some(total) = (count as usize).checked_mul(size) else {
+            continue;
+        };
+        let data_off = if total <= 4 {
+            e + 8
+        } else {
+            t.u32(e + 8)? as usize
+        };
         let Some(raw) = t.d.get(data_off..data_off.saturating_add(total)) else {
             m.warn("EXIF value out of bounds");
             continue;
@@ -160,10 +180,17 @@ fn ifd(t: Tiff, off: usize, group: &str, m: &mut Metadata, seen: &mut HashSet<us
         let value = match (id, ty) {
             (0x9286, _) => Value::Text(user_comment(raw, t.le)),
             (0x9C9B..=0x9C9F, _) => {
-                let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let units: Vec<u16> = raw
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
                 Value::Text(clean(&String::from_utf16_lossy(&units)))
             }
-            (_, 2) => Value::Text(clean(&utf8_or_latin1(raw.split(|&b| b == 0).next().unwrap_or(&[])))),
+            (_, 2) => Value::Text(clean(&utf8_or_latin1(
+                raw.split(|&b| b == 0).next().unwrap_or(&[]),
+            ))),
             (_, 7) => Value::Text(clean(&latin1(raw))),
             _ => numeric(t, ty, raw, count as usize),
         };
@@ -187,11 +214,19 @@ fn numeric(t: Tiff, ty: u16, raw: &[u8], count: usize) -> Value {
             9 => f64::from(tt.u32(i * 4)? as i32),
             5 => {
                 let (n, d) = (tt.u32(i * 8)?, tt.u32(i * 8 + 4)?);
-                if d == 0 { return Some(f64::INFINITY) } else { f64::from(n) / f64::from(d) }
+                if d == 0 {
+                    return Some(f64::INFINITY);
+                } else {
+                    f64::from(n) / f64::from(d)
+                }
             }
             10 => {
                 let (n, d) = (tt.u32(i * 8)? as i32, tt.u32(i * 8 + 4)? as i32);
-                if d == 0 { return Some(f64::INFINITY) } else { f64::from(n) / f64::from(d) }
+                if d == 0 {
+                    return Some(f64::INFINITY);
+                } else {
+                    f64::from(n) / f64::from(d)
+                }
             }
             11 => f64::from(f32::from_bits(tt.u32(i * 4)?)),
             12 => {
@@ -203,7 +238,13 @@ fn numeric(t: Tiff, ty: u16, raw: &[u8], count: usize) -> Value {
         })
     };
     let vals: Vec<f64> = (0..count.min(64)).filter_map(one).collect();
-    let fmt = |v: f64| if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") };
+    let fmt = |v: f64| {
+        if v.fract() == 0.0 && v.abs() < 1e15 {
+            format!("{}", v as i64)
+        } else {
+            format!("{v}")
+        }
+    };
     match vals.as_slice() {
         [v] if v.fract() == 0.0 && v.abs() < 1e15 => Value::Int(*v as i64),
         [v] => Value::Real(*v),
@@ -226,8 +267,16 @@ fn user_comment(raw: &[u8], le: bool) -> String {
                 _ => (body, le),
             };
             let units: Vec<u16> = body
-                .chunks_exact(2)
-                .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| {
+                    if le {
+                        u16::from_le_bytes([c[0], c[1]])
+                    } else {
+                        u16::from_be_bytes([c[0], c[1]])
+                    }
+                })
                 .collect();
             String::from_utf16_lossy(&units)
         }

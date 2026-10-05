@@ -13,12 +13,22 @@ fn gradient(w: u32, h: u32, format: PixelFormat) -> Image {
             }
         }
     }
-    Image { width: w, height: h, format, data }
+    Image {
+        width: w,
+        height: h,
+        format,
+        data,
+    }
 }
 
 #[test]
 fn encode_decode_roundtrip_all_formats() {
-    for format in [PixelFormat::Gray8, PixelFormat::GrayAlpha8, PixelFormat::Rgb8, PixelFormat::Rgba8] {
+    for format in [
+        PixelFormat::Gray8,
+        PixelFormat::GrayAlpha8,
+        PixelFormat::Rgb8,
+        PixelFormat::Rgba8,
+    ] {
         for (w, h) in [(1, 1), (3, 5), (64, 33), (257, 3)] {
             let img = gradient(w, h, format);
             let png = encode(&img, Level::DEFAULT).unwrap();
@@ -67,7 +77,11 @@ fn decodes_ffmpeg_pixel_formats_like_ffmpeg() {
         };
         let (info, img) = decode(&png, &Limits::default(), &Deadline::NONE).unwrap();
         assert_eq!((img.width, img.height), (97, 61));
-        assert!(img.format == expect || (pix == "pal8" && img.format == PixelFormat::Rgba8), "{pix}: {:?}", img.format);
+        assert!(
+            img.format == expect || (pix == "pal8" && img.format == PixelFormat::Rgba8),
+            "{pix}: {:?}",
+            img.format
+        );
         // Reference: ffmpeg's own decode to rgb24 must match ours for 8-bit
         // RGB-family formats.
         if matches!(pix, "rgb24" | "pal8" | "gray" | "monob") {
@@ -88,12 +102,18 @@ fn decodes_ffmpeg_pixel_formats_like_ffmpeg() {
 fn rejects_truncation_crc_and_bombs() {
     let png = encode(&gradient(50, 50, PixelFormat::Rgb8), Level::DEFAULT).unwrap();
     for cut in [8, 20, 33, png.len() / 2, png.len() - 1] {
-        assert!(decode(&png[..cut], &Limits::default(), &Deadline::NONE).is_err(), "cut {cut}");
+        assert!(
+            decode(&png[..cut], &Limits::default(), &Deadline::NONE).is_err(),
+            "cut {cut}"
+        );
     }
     let mut bad = png.clone();
     bad[40] ^= 1;
     assert!(decode(&bad, &Limits::default(), &Deadline::NONE).is_err());
-    let limits = Limits { max_pixels: 2000, ..Limits::default() };
+    let limits = Limits {
+        max_pixels: 2000,
+        ..Limits::default()
+    };
     assert!(decode(&png, &limits, &Deadline::NONE).is_err());
 }
 
@@ -139,7 +159,15 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
 #[test]
 fn decodes_adam7_interlaced() {
     let img = gradient(37, 23, PixelFormat::Rgb8);
-    let passes = [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+    let passes = [
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ];
     let mut raw = Vec::new();
     for (pi, (x0, y0, dx, dy)) in passes.into_iter().enumerate() {
         let mut y = y0;
@@ -197,7 +225,12 @@ src.save(f"{d}/text.png",pnginfo=info)
 src.convert("L").save(f"{d}/l.png")
 src.convert("1").save(f"{d}/one.png")
 "#;
-    let ok = Command::new("python3").args(["-c", script]).arg(&dir).status().map(|s| s.success()).unwrap_or(false);
+    let ok = Command::new("python3")
+        .args(["-c", script])
+        .arg(&dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     if !ok {
         eprintln!("Pillow unavailable; skipping");
         return;
@@ -211,7 +244,11 @@ src.convert("1").save(f"{d}/one.png")
         assert_eq!(img.into_rgb8(), reference, "bits {bits}");
     }
     let (info, _) = dec("text.png");
-    let texts: Vec<_> = info.texts.iter().map(|t| (t.keyword.as_str(), t.text.as_str())).collect();
+    let texts: Vec<_> = info
+        .texts
+        .iter()
+        .map(|t| (t.keyword.as_str(), t.text.as_str()))
+        .collect();
     assert!(texts.contains(&("parameters", "Steps: 20, Sampler: Euler")));
     assert!(texts.contains(&("Description", "설명 text")));
     assert!(texts.contains(&("Comment", "zipped comment")));

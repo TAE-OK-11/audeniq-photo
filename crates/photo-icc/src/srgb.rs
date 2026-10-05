@@ -35,9 +35,21 @@ pub(crate) fn inverse(a: &Mat3) -> Option<Mat3> {
         return None;
     }
     Some([
-        [c0 / det, (a[0][2] * a[2][1] - a[0][1] * a[2][2]) / det, (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / det],
-        [c1 / det, (a[0][0] * a[2][2] - a[0][2] * a[2][0]) / det, (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / det],
-        [c2 / det, (a[0][1] * a[2][0] - a[0][0] * a[2][1]) / det, (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / det],
+        [
+            c0 / det,
+            (a[0][2] * a[2][1] - a[0][1] * a[2][2]) / det,
+            (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / det,
+        ],
+        [
+            c1 / det,
+            (a[0][0] * a[2][2] - a[0][2] * a[2][0]) / det,
+            (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / det,
+        ],
+        [
+            c2 / det,
+            (a[0][1] * a[2][0] - a[0][0] * a[2][1]) / det,
+            (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / det,
+        ],
     ])
 }
 
@@ -53,11 +65,22 @@ fn white_from_temp(t: f64) -> (f64, f64) {
 
 /// Bradford chromatic adaptation from `from` to `to` (XYZ).
 pub(crate) fn bradford(from: [f64; 3], to: [f64; 3]) -> Mat3 {
-    let b: Mat3 = [[0.8951, 0.2664, -0.1614], [-0.7502, 1.7135, 0.0367], [0.0389, -0.0685, 1.0296]];
+    let b: Mat3 = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ];
     let src = apply(&b, from);
     let dst = apply(&b, to);
-    let cone = [[dst[0] / src[0], 0.0, 0.0], [0.0, dst[1] / src[1], 0.0], [0.0, 0.0, dst[2] / src[2]]];
-    mul(&inverse(&b).expect("Bradford is invertible"), &mul(&cone, &b))
+    let cone = [
+        [dst[0] / src[0], 0.0, 0.0],
+        [0.0, dst[1] / src[1], 0.0],
+        [0.0, 0.0, dst[2] / src[2]],
+    ];
+    mul(
+        &inverse(&b).expect("Bradford is invertible"),
+        &mul(&cone, &b),
+    )
 }
 
 /// Linear sRGB → XYZ(D50) colorant matrix of lcms's built-in profile.
@@ -67,7 +90,11 @@ pub(crate) fn matrix() -> Mat3 {
     let prim: Mat3 = [
         [p[0].0, p[1].0, p[2].0],
         [p[0].1, p[1].1, p[2].1],
-        [1.0 - p[0].0 - p[0].1, 1.0 - p[1].0 - p[1].1, 1.0 - p[2].0 - p[2].1],
+        [
+            1.0 - p[0].0 - p[0].1,
+            1.0 - p[1].0 - p[1].1,
+            1.0 - p[2].0 - p[2].1,
+        ],
     ];
     let inv = inverse(&prim).expect("primaries are independent");
     let white = [xn / yn, 1.0, (1.0 - xn - yn) / yn];
@@ -82,7 +109,18 @@ pub(crate) fn matrix() -> Mat3 {
 }
 
 pub(crate) fn trc() -> Curve {
-    Curve::Parametric(4, [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045, 0.0, 0.0])
+    Curve::Parametric(
+        4,
+        [
+            2.4,
+            1.0 / 1.055,
+            0.055 / 1.055,
+            1.0 / 12.92,
+            0.04045,
+            0.0,
+            0.0,
+        ],
+    )
 }
 
 pub(crate) fn lab_to_xyz(lab: [f64; 3]) -> [f64; 3] {
@@ -91,7 +129,11 @@ pub(crate) fn lab_to_xyz(lab: [f64; 3]) -> [f64; 3] {
     let fz = fy - 0.005 * lab[2];
     let f = |t: f64| {
         let lim = 24.0 / 116.0;
-        if t <= lim { (108.0 / 841.0) * (t - 16.0 / 116.0) } else { t * t * t }
+        if t <= lim {
+            (108.0 / 841.0) * (t - 16.0 / 116.0)
+        } else {
+            t * t * t
+        }
     };
     [f(fx) * D50[0], f(fy) * D50[1], f(fz) * D50[2]]
 }
@@ -99,7 +141,11 @@ pub(crate) fn lab_to_xyz(lab: [f64; 3]) -> [f64; 3] {
 pub(crate) fn xyz_to_lab(xyz: [f64; 3]) -> [f64; 3] {
     let f = |t: f64| {
         let lim = (24.0f64 / 116.0).powi(3);
-        if t <= lim { (841.0 / 108.0) * t + 16.0 / 116.0 } else { t.cbrt() }
+        if t <= lim {
+            (841.0 / 108.0) * t + 16.0 / 116.0
+        } else {
+            t.cbrt()
+        }
     };
     let fx = f(xyz[0] / D50[0]);
     let fy = f(xyz[1] / D50[1]);

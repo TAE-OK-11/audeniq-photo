@@ -45,10 +45,28 @@ print("\n".join(cases))
 fn ffmpeg_cases(dir: &std::path::Path) -> Vec<String> {
     // 4:4:0 and 4:1:1 via ffmpeg's mjpeg encoder (decoded by Pillow).
     let mut out = Vec::new();
-    for (name, pix) in [("ff440", "yuvj440p"), ("ff411", "yuvj411p"), ("ff422", "yuvj422p")] {
+    for (name, pix) in [
+        ("ff440", "yuvj440p"),
+        ("ff411", "yuvj411p"),
+        ("ff422", "yuvj422p"),
+    ] {
         let path = dir.join(format!("{name}.jpg"));
         let ok = Command::new("ffmpeg")
-            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=90x58", "-frames:v", "1", "-pix_fmt", pix, "-q:v", "3"])
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=90x58",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                pix,
+                "-q:v",
+                "3",
+            ])
             .arg(&path)
             .status()
             .map(|s| s.success())
@@ -77,15 +95,26 @@ for n in sys.argv[2:]:
 fn matches_pillow_bit_for_bit() {
     let dir = std::env::temp_dir().join(format!("photo-jpeg-parity-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let Ok(out) = Command::new("python3").args(["-c", SCRIPT]).arg(&dir).output() else {
+    let Ok(out) = Command::new("python3")
+        .args(["-c", SCRIPT])
+        .arg(&dir)
+        .output()
+    else {
         eprintln!("python3 unavailable; skipping");
         return;
     };
     if !out.status.success() {
-        eprintln!("Pillow unavailable; skipping: {}", String::from_utf8_lossy(&out.stderr));
+        eprintln!(
+            "Pillow unavailable; skipping: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         return;
     }
-    let mut cases: Vec<String> = String::from_utf8(out.stdout).unwrap().lines().map(str::to_owned).collect();
+    let mut cases: Vec<String> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
     cases.extend(ffmpeg_cases(&dir));
     let mut failures = Vec::new();
     for name in &cases {
@@ -108,14 +137,26 @@ fn matches_pillow_bit_for_bit() {
         assert_eq!(img.format, expect_fmt, "{name}");
         if img.data != want {
             let diffs = img.data.iter().zip(&want).filter(|(a, b)| a != b).count();
-            let maxd = img.data.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            let maxd = img
+                .data
+                .iter()
+                .zip(&want)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
             failures.push(format!("{name}: {diffs} samples differ (max {maxd})"));
         }
     }
     std::fs::remove_dir_all(&dir).ok();
     eprintln!("compared {} JPEG cases against Pillow", cases.len());
     assert!(cases.len() > 50);
-    assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), cases.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -138,7 +179,13 @@ for sub,prog in [(0,False),(2,False),(2,True),(1,True)]:
     open(f"{d}/{n}.raw","wb").write(g.tobytes())
     print(n)
 "#;
-    let Ok(out) = Command::new("python3").args(["-c", script]).arg(&dir).output() else { return };
+    let Ok(out) = Command::new("python3")
+        .args(["-c", script])
+        .arg(&dir)
+        .output()
+    else {
+        return;
+    };
     if !out.status.success() {
         eprintln!("Pillow unavailable; skipping");
         return;

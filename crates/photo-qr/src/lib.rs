@@ -26,7 +26,10 @@ pub struct Scan {
 pub fn scan(gray: &[u8], width: usize, height: usize, deadline: &Deadline) -> Result<Scan> {
     let mut q = identify::Quirc::new(gray, width, height);
     q.identify(deadline)?;
-    let mut out = Scan { candidates: q.grids.len(), decoded: 0 };
+    let mut out = Scan {
+        candidates: q.grids.len(),
+        decoded: 0,
+    };
     for i in 0..q.grids.len() {
         deadline.check()?;
         let code = q.extract(i);
@@ -42,10 +45,13 @@ pub fn scan(gray: &[u8], width: usize, height: usize, deadline: &Deadline) -> Re
 pub fn to_gray(pixels: &[u8], channels: usize) -> Vec<u8> {
     match channels {
         1 => pixels.to_vec(),
-        2 => pixels.chunks_exact(2).map(|p| p[0]).collect(),
+        2 => pixels.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
         _ => pixels
             .chunks_exact(channels)
-            .map(|p| ((u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114 + 500) / 1000) as u8)
+            .map(|p| {
+                ((u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114 + 500)
+                    / 1000) as u8
+            })
             .collect(),
     }
 }

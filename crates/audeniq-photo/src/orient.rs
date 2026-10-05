@@ -31,5 +31,10 @@ pub(crate) fn apply(img: Image, orientation: i64) -> Image {
             out[d..d + ch].copy_from_slice(&img.data[s..s + ch]);
         }
     }
-    Image { width: ow as u32, height: oh as u32, format: img.format, data: out }
+    Image {
+        width: ow as u32,
+        height: oh as u32,
+        format: img.format,
+        data: out,
+    }
 }

@@ -8,10 +8,19 @@ fn source(w: u32, h: u32) -> Image {
     let mut data = Vec::new();
     for y in 0..h {
         for x in 0..w {
-            data.extend_from_slice(&[((x * 7 + y * 3) % 256) as u8, ((x * x + y * 5) % 256) as u8, (((x ^ y) * 9) % 256) as u8]);
+            data.extend_from_slice(&[
+                ((x * 7 + y * 3) % 256) as u8,
+                ((x * x + y * 5) % 256) as u8,
+                (((x ^ y) * 9) % 256) as u8,
+            ]);
         }
     }
-    Image { width: w, height: h, format: PixelFormat::Rgb8, data }
+    Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data,
+    }
 }
 
 #[test]
@@ -23,7 +32,11 @@ fn byte_identical_to_pillow() {
         let img = source(w, h);
         let raw = dir.join("src.raw");
         std::fs::write(&raw, &img.data).unwrap();
-        for (q, sub, pil_sub) in [(95u8, Subsampling::S444, 0), (85, Subsampling::S420, 2), (40, Subsampling::S420, 2)] {
+        for (q, sub, pil_sub) in [
+            (95u8, Subsampling::S444, 0),
+            (85, Subsampling::S420, 2),
+            (40, Subsampling::S420, 2),
+        ] {
             let ours = encode(&img, q, sub).unwrap();
             let target = dir.join("pil.jpg");
             let script = format!(
@@ -31,7 +44,12 @@ fn byte_identical_to_pillow() {
                 raw.display(),
                 target.display()
             );
-            if !Command::new("python3").args(["-c", &script]).status().map(|s| s.success()).unwrap_or(false) {
+            if !Command::new("python3")
+                .args(["-c", &script])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
                 eprintln!("Pillow unavailable; skipping");
                 return;
             }

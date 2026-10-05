@@ -22,7 +22,13 @@ impl HuffTable {
         if total > 256 || total != symbols.len() {
             return Err(Error::Invalid("Huffman table size"));
         }
-        let mut t = HuffTable { lookup: [0; 1 << LOOKAHEAD], maxcode: [-1; 18], valoffset: [0; 18], symbols: [0; 256], fast_ac: [0; 1 << LOOKAHEAD] };
+        let mut t = HuffTable {
+            lookup: [0; 1 << LOOKAHEAD],
+            maxcode: [-1; 18],
+            valoffset: [0; 18],
+            symbols: [0; 256],
+            fast_ac: [0; 1 << LOOKAHEAD],
+        };
         t.symbols[..total].copy_from_slice(symbols);
         let mut code: u32 = 0;
         let mut p = 0usize;
@@ -61,7 +67,11 @@ impl HuffTable {
             if size != 0 && len + size <= LOOKAHEAD {
                 let v = ((i as u32) >> (LOOKAHEAD - len - size)) & ((1 << size) - 1);
                 let v = v as i32;
-                let value = if v < (1 << (size - 1)) { v - (1 << size) + 1 } else { v };
+                let value = if v < (1 << (size - 1)) {
+                    v - (1 << size) + 1
+                } else {
+                    v
+                };
                 t.fast_ac[i] = (value << 16) | ((run as i32) << 8) | (len + size) as i32;
             }
         }
@@ -82,7 +92,14 @@ pub(crate) struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     pub(crate) fn new(data: &'a [u8], pos: usize) -> Self {
-        BitReader { data, pos, buf: 0, cnt: 0, marker: None, fill: 0 }
+        BitReader {
+            data,
+            pos,
+            buf: 0,
+            cnt: 0,
+            marker: None,
+            fill: 0,
+        }
     }
 
     #[inline(always)]
@@ -202,7 +219,10 @@ impl<'a> BitReader<'a> {
         self.buf <<= l;
         self.cnt -= l as u32;
         let idx = code + t.valoffset[l];
-        t.symbols.get(idx as usize).copied().ok_or(Error::Invalid("corrupt Huffman data"))
+        t.symbols
+            .get(idx as usize)
+            .copied()
+            .ok_or(Error::Invalid("corrupt Huffman data"))
     }
 
     /// `HUFF_EXTEND(get_bits(s), s)`. A magnitude category above 16 can
@@ -216,7 +236,11 @@ impl<'a> BitReader<'a> {
             return Err(Error::Invalid("corrupt Huffman data"));
         }
         let v = self.bits(s) as i32;
-        Ok(if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v })
+        Ok(if v < (1 << (s - 1)) {
+            v - (1 << s) + 1
+        } else {
+            v
+        })
     }
 
     /// Drop buffered bits and move to the marker ending this segment.

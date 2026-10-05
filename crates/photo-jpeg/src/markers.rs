@@ -33,7 +33,11 @@ pub fn segments(data: &[u8]) -> Result<(Vec<Segment<'_>>, Option<usize>)> {
                     return Err(Error::Invalid("segment length"));
                 }
                 let body = b.take(len - 2)?;
-                out.push(Segment { marker, data: body, offset: at });
+                out.push(Segment {
+                    marker,
+                    data: body,
+                    offset: at,
+                });
                 pos = at + 2 + len;
             }
         }
@@ -106,7 +110,13 @@ impl FrameInfo {
             }
             components.push(Component { id, h, v, tq });
         }
-        Ok(FrameInfo { marker, precision, width, height, components })
+        Ok(FrameInfo {
+            marker,
+            precision,
+            width,
+            height,
+            components,
+        })
     }
 }
 
@@ -146,7 +156,11 @@ pub(crate) fn color_transform(frame: &FrameInfo, jfif: bool, adobe: Option<u8>) 
             if jfif {
                 ColorTransform::YCbCr
             } else if let Some(t) = adobe {
-                if t == 0 { ColorTransform::Rgb } else { ColorTransform::YCbCr }
+                if t == 0 {
+                    ColorTransform::Rgb
+                } else {
+                    ColorTransform::YCbCr
+                }
             } else if ids == [82, 71, 66] {
                 ColorTransform::Rgb
             } else {

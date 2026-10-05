@@ -82,11 +82,22 @@ fn perspective_setup(rect: &[Point; 4], w: f64, h: f64) -> [f64; 8] {
     let wden = w * (x2 * y3 - x3 * y2 + (x3 - x2) * y1 + x1 * (y2 - y3));
     let hden = h * (x2 * y3 + x1 * (y2 - y3) - x3 * y2 + (x3 - x2) * y1);
     [
-        (x1 * (x2 * y3 - x3 * y2) + x0 * (-x2 * y3 + x3 * y2 + (x2 - x3) * y1) + x1 * (x3 - x2) * y0) / wden,
-        -(x0 * (x2 * y3 + x1 * (y2 - y3) - x2 * y1) - x1 * x3 * y2 + x2 * x3 * y1 + (x1 * x3 - x2 * x3) * y0) / hden,
+        (x1 * (x2 * y3 - x3 * y2)
+            + x0 * (-x2 * y3 + x3 * y2 + (x2 - x3) * y1)
+            + x1 * (x3 - x2) * y0)
+            / wden,
+        -(x0 * (x2 * y3 + x1 * (y2 - y3) - x2 * y1) - x1 * x3 * y2
+            + x2 * x3 * y1
+            + (x1 * x3 - x2 * x3) * y0)
+            / hden,
         x0,
-        (y0 * (x1 * (y3 - y2) - x2 * y3 + x3 * y2) + y1 * (x2 * y3 - x3 * y2) + x0 * y1 * (y2 - y3)) / wden,
-        (x0 * (y1 * y3 - y2 * y3) + x1 * y2 * y3 - x2 * y1 * y3 + y0 * (x3 * y2 - x1 * y2 + (x2 - x3) * y1)) / hden,
+        (y0 * (x1 * (y3 - y2) - x2 * y3 + x3 * y2)
+            + y1 * (x2 * y3 - x3 * y2)
+            + x0 * y1 * (y2 - y3))
+            / wden,
+        (x0 * (y1 * y3 - y2 * y3) + x1 * y2 * y3 - x2 * y1 * y3
+            + y0 * (x3 * y2 - x1 * y2 + (x2 - x3) * y1))
+            / hden,
         y0,
         (x1 * (y3 - y2) + x0 * (y2 - y3) + (x2 - x3) * y1 + (x3 - x2) * y0) / wden,
         (-x2 * y3 + x1 * y3 + x3 * y2 + x0 * (y1 - y2) - x3 * y1 + (x2 - x1) * y0) / hden,
@@ -98,19 +109,24 @@ fn rint(v: f64) -> i32 {
     if !v.is_finite() {
         return i32::MIN;
     }
-    v.round_ties_even().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    v.round_ties_even()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
 fn perspective_map(c: &[f64; 8], u: f64, v: f64) -> Point {
     let den = c[6] * u + c[7] * v + 1.0;
     let x = (c[0] * u + c[1] * v + c[2]) / den;
     let y = (c[3] * u + c[4] * v + c[5]) / den;
-    Point { x: rint(x), y: rint(y) }
+    Point {
+        x: rint(x),
+        y: rint(y),
+    }
 }
 
 fn perspective_unmap(c: &[f64; 8], p: Point) -> (f64, f64) {
     let (x, y) = (f64::from(p.x), f64::from(p.y));
-    let den = -c[0] * c[7] * y + c[1] * c[6] * y + (c[3] * c[7] - c[4] * c[6]) * x + c[0] * c[4] - c[1] * c[3];
+    let den = -c[0] * c[7] * y + c[1] * c[6] * y + (c[3] * c[7] - c[4] * c[6]) * x + c[0] * c[4]
+        - c[1] * c[3];
     let u = -(c[1] * (y - c[5]) - c[2] * c[7] * y + (c[5] * c[7] - c[4]) * x + c[2] * c[4]) / den;
     let v = (c[0] * (y - c[5]) - c[2] * c[6] * y + (c[5] * c[6] - c[3]) * x + c[2] * c[3]) / den;
     (u, v)
@@ -127,7 +143,10 @@ fn line_intersect(p0: Point, p1: Point, q0: Point, q1: Point) -> Option<Point> {
     if det == 0 {
         return None;
     }
-    Some(Point { x: ((d * e - b * f) / det) as i32, y: ((-c * e + a * f) / det) as i32 })
+    Some(Point {
+        x: ((d * e - b * f) / det) as i32,
+        y: ((-c * e + a * f) / det) as i32,
+    })
 }
 
 /// Span visitor used by the flood fill.
@@ -174,8 +193,10 @@ struct OtherCorners {
 impl Spans for OtherCorners {
     fn span(&mut self, y: i32, left: i32, right: i32) {
         for x in [left, right] {
-            let up = i64::from(x) * i64::from(self.reference.x) + i64::from(y) * i64::from(self.reference.y);
-            let r = i64::from(x) * -i64::from(self.reference.y) + i64::from(y) * i64::from(self.reference.x);
+            let up = i64::from(x) * i64::from(self.reference.x)
+                + i64::from(y) * i64::from(self.reference.y);
+            let r = i64::from(x) * -i64::from(self.reference.y)
+                + i64::from(y) * i64::from(self.reference.x);
             let s = [up, r, -up, -r];
             for j in 0..4 {
                 if s[j] > self.scores[j] {
@@ -195,7 +216,8 @@ struct Leftmost {
 impl Spans for Leftmost {
     fn span(&mut self, y: i32, left: i32, right: i32) {
         for x in [left, right] {
-            let d = -i64::from(self.reference.y) * i64::from(x) + i64::from(self.reference.x) * i64::from(y);
+            let d = -i64::from(self.reference.y) * i64::from(x)
+                + i64::from(self.reference.x) * i64::from(y);
             if d < self.best {
                 self.best = d;
                 self.corner = Point { x, y };
@@ -206,7 +228,14 @@ impl Spans for Leftmost {
 
 impl Quirc {
     pub fn new(gray: &[u8], w: usize, h: usize) -> Quirc {
-        let mut q = Quirc { w, h, px: vec![WHITE; w * h], regions: Vec::new(), caps: Vec::new(), grids: Vec::new() };
+        let mut q = Quirc {
+            w,
+            h,
+            px: vec![WHITE; w * h],
+            regions: Vec::new(),
+            caps: Vec::new(),
+            grids: Vec::new(),
+        };
         q.threshold(gray);
         q
     }
@@ -238,7 +267,11 @@ impl Quirc {
             row_avg.iter_mut().for_each(|v| *v = 0);
             let row = &gray[y * w..(y + 1) * w];
             for x in 0..w {
-                let (wi, ui) = if y & 1 == 1 { (x, w - 1 - x) } else { (w - 1 - x, x) };
+                let (wi, ui) = if y & 1 == 1 {
+                    (x, w - 1 - x)
+                } else {
+                    (w - 1 - x, x)
+                };
                 avg_w = div(avg_w * (s - 1)) + u64::from(row[wi]);
                 avg_u = div(avg_u * (s - 1)) + u64::from(row[ui]);
                 row_avg[wi] += avg_w;
@@ -308,7 +341,11 @@ impl Quirc {
         let id = self.regions.len();
         let mut count = Count(0);
         self.fill(x, y, p, REGION0 + id as u16, &mut count);
-        self.regions.push(Region { seed: Point { x, y }, count: count.0, capstone: -1 });
+        self.regions.push(Region {
+            seed: Point { x, y },
+            count: count.0,
+            capstone: -1,
+        });
         id as i32
     }
 
@@ -318,13 +355,24 @@ impl Quirc {
 
     fn find_region_corners(&mut self, r: usize, reference: Point) -> [Point; 4] {
         let seed = self.regions[r].seed;
-        let mut one = OneCorner { reference, best: -1, corner: Point::default() };
+        let mut one = OneCorner {
+            reference,
+            best: -1,
+            corner: Point::default(),
+        };
         let label = self.label(r);
         self.fill(seed.x, seed.y, label, BLACK, &mut one);
-        let rf = Point { x: one.corner.x - reference.x, y: one.corner.y - reference.y };
+        let rf = Point {
+            x: one.corner.x - reference.x,
+            y: one.corner.y - reference.y,
+        };
         let i = i64::from(seed.x) * i64::from(rf.x) + i64::from(seed.y) * i64::from(rf.y);
         let j = i64::from(seed.x) * -i64::from(rf.y) + i64::from(seed.y) * i64::from(rf.x);
-        let mut other = OtherCorners { reference: rf, scores: [i, j, -i, -j], corners: [seed; 4] };
+        let mut other = OtherCorners {
+            reference: rf,
+            scores: [i, j, -i, -j],
+            corners: [seed; 4],
+        };
         self.fill(seed.x, seed.y, BLACK, label, &mut other);
         other.corners
     }
@@ -339,14 +387,24 @@ impl Quirc {
         let corners = self.find_region_corners(ring, self.regions[stone].seed);
         let c = perspective_setup(&corners, 7.0, 7.0);
         let center = perspective_map(&c, 3.5, 3.5);
-        self.caps.push(Capstone { corners, center, c, qr_grid: -1 });
+        self.caps.push(Capstone {
+            corners,
+            center,
+            c,
+            qr_grid: -1,
+        });
     }
 
     fn test_capstone(&mut self, x: i32, y: i32, pb: &[i32; 5]) {
         let ring_right = self.region_code(x - pb[4], y);
         let stone = self.region_code(x - pb[4] - pb[3] - pb[2], y);
         let ring_left = self.region_code(x - pb[4] - pb[3] - pb[2] - pb[1] - pb[0], y);
-        if ring_left < 0 || ring_right < 0 || stone < 0 || ring_left != ring_right || ring_left == stone {
+        if ring_left < 0
+            || ring_right < 0
+            || stone < 0
+            || ring_left != ring_right
+            || ring_left == stone
+        {
             return;
         }
         let (ring, stone) = (ring_left as usize, stone as usize);
@@ -377,7 +435,9 @@ impl Quirc {
                     let check = [1, 1, 3, 1, 1];
                     let avg = (pb[0] + pb[1] + pb[3] + pb[4]) / 4;
                     let err = avg * 3 / 4;
-                    if (0..5).all(|i| pb[i] >= check[i] * avg - err && pb[i] <= check[i] * avg + err) {
+                    if (0..5)
+                        .all(|i| pb[i] >= check[i] * avg - err && pb[i] <= check[i] * avg + err)
+                    {
                         self.test_capstone(x as i32, y as i32, &pb);
                     }
                 }
@@ -393,7 +453,8 @@ impl Quirc {
         let mut best_score = i64::MAX;
         for j in 0..4 {
             let p = cap.corners[j];
-            let score = i64::from(p.x - h0.x) * -i64::from(hd.y) + i64::from(p.y - h0.y) * i64::from(hd.x);
+            let score =
+                i64::from(p.x - h0.x) * -i64::from(hd.y) + i64::from(p.y - h0.y) * i64::from(hd.x);
             if j == 0 || score < best_score {
                 best = j;
                 best_score = score;
@@ -431,7 +492,9 @@ impl Quirc {
         let mut run = 0;
         let mut count = 0;
         for _ in 0..=d {
-            let Some(px) = self.pixel(Point { x, y }) else { break };
+            let Some(px) = self.pixel(Point { x, y }) else {
+                break;
+            };
             if px {
                 if run >= 2 {
                     count += 1;
@@ -441,9 +504,17 @@ impl Quirc {
                 run += 1;
             }
             a += n;
-            if x_dominant { x += dom_step } else { y += dom_step }
+            if x_dominant {
+                x += dom_step
+            } else {
+                y += dom_step
+            }
             if a >= d {
-                if x_dominant { y += nondom_step } else { x += nondom_step }
+                if x_dominant {
+                    y += nondom_step
+                } else {
+                    x += nondom_step
+                }
                 a -= d;
             }
         }
@@ -481,7 +552,9 @@ impl Quirc {
         let a = perspective_map(&c0, u, v + 1.0);
         let (u, v) = perspective_unmap(&c2, b);
         let c = perspective_map(&c2, u + 1.0, v);
-        let size_estimate = (i64::from(a.x - b.x) * -i64::from(c.y - b.y) + i64::from(a.y - b.y) * i64::from(c.x - b.x)).abs();
+        let size_estimate = (i64::from(a.x - b.x) * -i64::from(c.y - b.y)
+            + i64::from(a.y - b.y) * i64::from(c.x - b.x))
+        .abs();
         let (dx, dy) = ([1, 0, -1, 0], [0, -1, 0, 1]);
         let mut step = 1i64;
         let mut dir = 0;
@@ -510,21 +583,37 @@ impl Quirc {
             return;
         }
         let h0 = self.caps[a].center;
-        let mut hd = Point { x: self.caps[c].center.x - h0.x, y: self.caps[c].center.y - h0.y };
+        let mut hd = Point {
+            x: self.caps[c].center.x - h0.x,
+            y: self.caps[c].center.y - h0.y,
+        };
         let bc = self.caps[b].center;
-        if i64::from(bc.x - h0.x) * -i64::from(hd.y) + i64::from(bc.y - h0.y) * i64::from(hd.x) > 0 {
+        if i64::from(bc.x - h0.x) * -i64::from(hd.y) + i64::from(bc.y - h0.y) * i64::from(hd.x) > 0
+        {
             std::mem::swap(&mut a, &mut c);
             hd = Point { x: -hd.x, y: -hd.y };
         }
         let gi = self.grids.len();
-        self.grids.push(Grid { caps: [a, b, c], align_region: -1, align: Point::default(), tpep: [Point::default(); 3], grid_size: 0, c: [0.0; 8] });
+        self.grids.push(Grid {
+            caps: [a, b, c],
+            align_region: -1,
+            align: Point::default(),
+            tpep: [Point::default(); 3],
+            grid_size: 0,
+            c: [0.0; 8],
+        });
         for i in 0..3 {
             let ci = self.grids[gi].caps[i];
             self.rotate_capstone(ci, h0, hd);
             self.caps[ci].qr_grid = gi as i32;
         }
         let ok = self.measure_timing_pattern(gi)
-            && match line_intersect(self.caps[a].corners[0], self.caps[a].corners[1], self.caps[c].corners[0], self.caps[c].corners[3]) {
+            && match line_intersect(
+                self.caps[a].corners[0],
+                self.caps[a].corners[1],
+                self.caps[c].corners[0],
+                self.caps[c].corners[3],
+            ) {
                 Some(p) => {
                     self.grids[gi].align = p;
                     true
@@ -545,8 +634,13 @@ impl Quirc {
             if ar >= 0 {
                 let seed = self.regions[ar as usize].seed;
                 let label = self.label(ar as usize);
-                let best = -i64::from(hd.y) * i64::from(seed.x) + i64::from(hd.x) * i64::from(seed.y);
-                let mut lm = Leftmost { reference: hd, best, corner: seed };
+                let best =
+                    -i64::from(hd.y) * i64::from(seed.x) + i64::from(hd.x) * i64::from(seed.y);
+                let mut lm = Leftmost {
+                    reference: hd,
+                    best,
+                    corner: seed,
+                };
                 self.fill(seed.x, seed.y, label, BLACK, &mut NoSpans);
                 self.fill(seed.x, seed.y, BLACK, label, &mut lm);
                 self.grids[gi].align = lm.corner;
@@ -557,7 +651,12 @@ impl Quirc {
 
     fn setup_qr_perspective(&mut self, gi: usize) {
         let g = &self.grids[gi];
-        let rect = [self.caps[g.caps[1]].corners[0], self.caps[g.caps[2]].corners[0], g.align, self.caps[g.caps[0]].corners[0]];
+        let rect = [
+            self.caps[g.caps[1]].corners[0],
+            self.caps[g.caps[2]].corners[0],
+            g.align,
+            self.caps[g.caps[0]].corners[0],
+        ];
         let size = f64::from(g.grid_size - 7);
         self.grids[gi].c = perspective_setup(&rect, size, size);
         self.jiggle_perspective(gi);
@@ -591,12 +690,14 @@ impl Quirc {
     }
 
     fn fitness_apat(&self, c: &[f64; 8], cx: i32, cy: i32) -> i32 {
-        self.fitness_cell(c, cx, cy) - self.fitness_ring(c, cx, cy, 1) + self.fitness_ring(c, cx, cy, 2)
+        self.fitness_cell(c, cx, cy) - self.fitness_ring(c, cx, cy, 1)
+            + self.fitness_ring(c, cx, cy, 2)
     }
 
     fn fitness_capstone(&self, c: &[f64; 8], x: i32, y: i32) -> i32 {
         let (x, y) = (x + 3, y + 3);
-        self.fitness_cell(c, x, y) + self.fitness_ring(c, x, y, 1) - self.fitness_ring(c, x, y, 2) + self.fitness_ring(c, x, y, 3)
+        self.fitness_cell(c, x, y) + self.fitness_ring(c, x, y, 1) - self.fitness_ring(c, x, y, 2)
+            + self.fitness_ring(c, x, y, 3)
     }
 
     fn fitness_all(&self, gi: usize, c: &[f64; 8]) -> i32 {
@@ -636,7 +737,11 @@ impl Quirc {
             for i in 0..16 {
                 let j = i >> 1;
                 let old = c[j];
-                c[j] = if i & 1 == 1 { old + adj[j] } else { old - adj[j] };
+                c[j] = if i & 1 == 1 {
+                    old + adj[j]
+                } else {
+                    old - adj[j]
+                };
                 let test = self.fitness_all(gi, &c);
                 if test > best {
                     best = test;

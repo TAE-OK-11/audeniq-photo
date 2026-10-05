@@ -57,9 +57,20 @@ impl Profile {
             if u64::from(offset) + u64::from(size) > data.len() as u64 || size < 8 {
                 return Err(Error::Invalid("ICC tag bounds"));
             }
-            tags.push(Tag { signature, offset, size });
+            tags.push(Tag {
+                signature,
+                offset,
+                size,
+            });
         }
-        Ok(Profile { data: data.to_vec(), version, class, color_space, pcs, tags })
+        Ok(Profile {
+            data: data.to_vec(),
+            version,
+            class,
+            color_space,
+            pcs,
+            tags,
+        })
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -75,7 +86,10 @@ impl Profile {
 
     /// Profile ID (MD5) as lowercase hex, as ExifTool prints `ProfileID`.
     pub fn profile_id_hex(&self) -> String {
-        self.data[84..100].iter().map(|b| format!("{b:02x}")).collect()
+        self.data[84..100]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 
     pub fn is_v4(&self) -> bool {
@@ -93,7 +107,9 @@ impl Profile {
         if d.len() < 20 || &d[..4] != b"XYZ " {
             return Err(Error::Invalid("XYZ tag type"));
         }
-        let f = |o: usize| f64::from(i32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])) / 65536.0;
+        let f = |o: usize| {
+            f64::from(i32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])) / 65536.0
+        };
         Ok([f(8), f(12), f(16)])
     }
 
@@ -145,7 +161,12 @@ fn parse_text(d: &[u8]) -> Option<String> {
             }
             let (off, len) = pick?;
             let s = d.get(off..off.checked_add(len)?)?;
-            let units: Vec<u16> = s.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = s
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
             let text = String::from_utf16_lossy(&units);
             Some(text.trim_end_matches('\0').to_string())
         }

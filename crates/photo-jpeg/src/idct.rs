@@ -100,7 +100,12 @@ fn even(c0: i32, c2: i32, c4: i32, c6: i32) -> (i32, i32, i32, i32) {
     let tmp3 = z1.wrapping_add(c2.wrapping_mul(FIX_0_765366865));
     let tmp0 = c0.wrapping_add(c4).wrapping_shl(CONST_BITS as u32);
     let tmp1 = c0.wrapping_sub(c4).wrapping_shl(CONST_BITS as u32);
-    (tmp0.wrapping_add(tmp3), tmp1.wrapping_add(tmp2), tmp1.wrapping_sub(tmp2), tmp0.wrapping_sub(tmp3))
+    (
+        tmp0.wrapping_add(tmp3),
+        tmp1.wrapping_add(tmp2),
+        tmp1.wrapping_sub(tmp2),
+        tmp0.wrapping_sub(tmp3),
+    )
 }
 
 #[inline(always)]

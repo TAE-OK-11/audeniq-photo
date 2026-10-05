@@ -62,14 +62,22 @@ fn parse_dqt(data: &[u8], qt: &mut [Option<[u16; 64]>; 4]) -> Result<()> {
         }
         let mut t = [0u16; 64];
         for k in 0..64 {
-            t[ZIGZAG[k]] = if pq == 0 { u16::from(b.u8()?) } else { b.u16_be()? };
+            t[ZIGZAG[k]] = if pq == 0 {
+                u16::from(b.u8()?)
+            } else {
+                b.u16_be()?
+            };
         }
         qt[tq] = Some(t);
     }
     Ok(())
 }
 
-fn parse_dht(data: &[u8], dc: &mut [Option<HuffTable>; 4], ac: &mut [Option<HuffTable>; 4]) -> Result<()> {
+fn parse_dht(
+    data: &[u8],
+    dc: &mut [Option<HuffTable>; 4],
+    ac: &mut [Option<HuffTable>; 4],
+) -> Result<()> {
     let mut b = Bytes::new(data);
     while b.remaining() > 0 {
         let tc_th = b.u8()?;
@@ -93,13 +101,15 @@ fn parse_dht(data: &[u8], dc: &mut [Option<HuffTable>; 4], ac: &mut [Option<Huff
 impl Frame {
     fn new(info: FrameInfo, limits: &Limits) -> Result<Frame> {
         match info.marker {
-            0xC0 | 0xC1 | 0xC2 => {}
+            0xC0..=0xC2 => {}
             0xC3 | 0xC7 | 0xCB | 0xCF => return Err(Error::Unsupported("lossless JPEG")),
             0xC9..=0xCF => return Err(Error::Unsupported("arithmetic-coded JPEG")),
             _ => return Err(Error::Unsupported("hierarchical JPEG")),
         }
         if info.precision != 8 {
-            return Err(Error::Unsupported("JPEG sample precision other than 8 bits"));
+            return Err(Error::Unsupported(
+                "JPEG sample precision other than 8 bits",
+            ));
         }
         if info.height == 0 {
             return Err(Error::Unsupported("JPEG DNL marker"));
@@ -108,8 +118,18 @@ impl Frame {
             return Err(Error::Unsupported("two-component JPEG"));
         }
         limits.check_dimensions(info.width, info.height)?;
-        let max_h = info.components.iter().map(|c| c.h as usize).max().unwrap_or(1);
-        let max_v = info.components.iter().map(|c| c.v as usize).max().unwrap_or(1);
+        let max_h = info
+            .components
+            .iter()
+            .map(|c| c.h as usize)
+            .max()
+            .unwrap_or(1);
+        let max_v = info
+            .components
+            .iter()
+            .map(|c| c.v as usize)
+            .max()
+            .unwrap_or(1);
         let (w, h) = (info.width as usize, info.height as usize);
         let mcus_x = w.div_ceil(8 * max_h);
         let mcus_y = h.div_ceil(8 * max_v);
@@ -135,7 +155,16 @@ impl Frame {
             });
         }
         let progressive = info.progressive();
-        Ok(Frame { info, comps, max_h, max_v, mcus_x, mcus_y, progressive, buffered: None })
+        Ok(Frame {
+            info,
+            comps,
+            max_h,
+            max_v,
+            mcus_x,
+            mcus_y,
+            progressive,
+            buffered: None,
+        })
     }
 
     fn allocate(&mut self, buffered: bool, luma_only: bool, limits: &Limits) -> Result<()> {
@@ -175,11 +204,25 @@ pub fn decode_luma(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<
     decode_with(data, limits, deadline, true)
 }
 
-fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) -> Result<(Info, Image)> {
+fn decode_with(
+    data: &[u8],
+    limits: &Limits,
+    deadline: &Deadline,
+    luma: bool,
+) -> Result<(Info, Image)> {
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return Err(Error::Invalid("not a JPEG file"));
     }
-    let mut st = State { qt: [None; 4], dc: Default::default(), ac: Default::default(), restart: 0, frame: None, scans: 0, eobrun: 0, luma_only: false };
+    let mut st = State {
+        qt: [None; 4],
+        dc: Default::default(),
+        ac: Default::default(),
+        restart: 0,
+        frame: None,
+        scans: 0,
+        eobrun: 0,
+        luma_only: false,
+    };
     let mut jfif = false;
     let mut adobe = None;
     let mut icc_chunks = Vec::new();
@@ -225,10 +268,14 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
                 st.frame = Some(Frame::new(FrameInfo::parse(marker, body)?, limits)?);
             }
             0xDA => {
-                if st.scans == 0 && luma {
-                    if let Some(f) = &st.frame {
-                        st.luma_only = matches!(color_transform(&f.info, jfif, adobe), ColorTransform::YCbCr | ColorTransform::Ycck);
-                    }
+                if st.scans == 0
+                    && luma
+                    && let Some(f) = &st.frame
+                {
+                    st.luma_only = matches!(
+                        color_transform(&f.info, jfif, adobe),
+                        ColorTransform::YCbCr | ColorTransform::Ycck
+                    );
                 }
                 st.scans += 1;
                 if st.scans > MAX_SCANS {
@@ -238,8 +285,12 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
             }
             0xDC => return Err(Error::Unsupported("JPEG DNL marker")),
             0xE0 if body.starts_with(b"JFIF\0") => jfif = true,
-            0xE1 if body.starts_with(b"Exif\0") && body.len() > 6 && exif.is_none() => exif = Some(body[6..].to_vec()),
-            0xE1 if body.starts_with(b"http://ns.adobe.com/xap/1.0/\0") && xmp.is_none() => xmp = Some(body[29..].to_vec()),
+            0xE1 if body.starts_with(b"Exif\0") && body.len() > 6 && exif.is_none() => {
+                exif = Some(body[6..].to_vec())
+            }
+            0xE1 if body.starts_with(b"http://ns.adobe.com/xap/1.0/\0") && xmp.is_none() => {
+                xmp = Some(body[29..].to_vec())
+            }
             0xE2 if body.starts_with(b"ICC_PROFILE\0") && body.len() >= 14 => {
                 icc_chunks.push((body[12], body[13], &body[14..]))
             }
@@ -253,7 +304,8 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
         return Err(Error::Invalid("no scans"));
     }
     let transform = color_transform(&frame.info, jfif, adobe);
-    let luma_only = st.luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
+    let luma_only =
+        st.luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
     if luma_only {
         frame.comps.truncate(1);
     }
@@ -268,7 +320,12 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
                 for bx in 0..c.bw {
                     let i = (by * c.bw + bx) * 64;
                     block.copy_from_slice(&c.coefs[i..i + 64]);
-                    idct_islow(&block, &quant, &mut plane[by * 8 * stride + bx * 8..], stride);
+                    idct_islow(
+                        &block,
+                        &quant,
+                        &mut plane[by * 8 * stride + bx * 8..],
+                        stride,
+                    );
                 }
             }
             c.coefs = Vec::new();
@@ -289,7 +346,17 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
             v_ratio: max_v / c.v,
         })
         .collect();
-    let image = convert(&planes, if luma_only { ColorTransform::Gray } else { transform }, w, h, deadline)?;
+    let image = convert(
+        &planes,
+        if luma_only {
+            ColorTransform::Gray
+        } else {
+            transform
+        },
+        w,
+        h,
+        deadline,
+    )?;
     drop(planes);
     let info = Info {
         icc_profile: assemble_icc(&mut icc_chunks),
@@ -305,7 +372,14 @@ fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) ->
 }
 
 /// Decode one scan. Returns the offset to continue marker parsing from.
-fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limits, deadline: &Deadline) -> Result<usize> {
+fn scan(
+    data: &[u8],
+    header: &[u8],
+    start: usize,
+    st: &mut State,
+    limits: &Limits,
+    deadline: &Deadline,
+) -> Result<usize> {
     let frame = st.frame.as_mut().ok_or(Error::Invalid("SOS before SOF"))?;
     let mut b = Bytes::new(header);
     let ns = b.u8()? as usize;
@@ -316,7 +390,11 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
     for _ in 0..ns {
         let id = b.u8()?;
         let t = b.u8()?;
-        let index = frame.comps.iter().position(|c| c.id == id).ok_or(Error::Invalid("SOS component"))?;
+        let index = frame
+            .comps
+            .iter()
+            .position(|c| c.id == id)
+            .ok_or(Error::Invalid("SOS component"))?;
         if sc.iter().any(|s: &ScanComp| s.index == index) {
             return Err(Error::Invalid("duplicate SOS component"));
         }
@@ -330,12 +408,18 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
     let se = b.u8()? as usize;
     let ahal = b.u8()?;
     let (ah, al) = (u32::from(ahal >> 4), u32::from(ahal & 15));
-    if frame.progressive {
-        if ss > se || se > 63 || (ss == 0 && se != 0) || (ss > 0 && ns != 1) || al > 13 || ah > 13 {
-            return Err(Error::Invalid("progressive scan parameters"));
-        }
+    if frame.progressive
+        && (ss > se || se > 63 || (ss == 0 && se != 0) || (ss > 0 && ns != 1) || al > 13 || ah > 13)
+    {
+        return Err(Error::Invalid("progressive scan parameters"));
     }
-    if ns > 1 && sc.iter().map(|s| frame.comps[s.index].h * frame.comps[s.index].v).sum::<usize>() > 10 {
+    if ns > 1
+        && sc
+            .iter()
+            .map(|s| frame.comps[s.index].h * frame.comps[s.index].v)
+            .sum::<usize>()
+            > 10
+    {
         return Err(Error::Invalid("too many blocks per MCU"));
     }
     if frame.buffered.is_none() {
@@ -396,10 +480,15 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
                 let (bh, bv) = if ns == 1 { (1, 1) } else { (c.h, c.v) };
                 for v in 0..bv {
                     for h in 0..bh {
-                        let (bx, by) = if ns == 1 { (ux, uy) } else { (ux * c.h + h, uy * c.v + v) };
+                        let (bx, by) = if ns == 1 {
+                            (ux, uy)
+                        } else {
+                            (ux * c.h + h, uy * c.v + v)
+                        };
                         if buffered {
                             let i = (by * c.bw + bx) * 64;
-                            let coefs: &mut [i16; 64] = (&mut c.coefs[i..i + 64]).try_into().expect("64");
+                            let coefs: &mut [i16; 64] =
+                                (&mut c.coefs[i..i + 64]).try_into().expect("64");
                             if frame.progressive {
                                 if ss == 0 {
                                     if ah == 0 {
@@ -412,15 +501,43 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
                                         coefs[0] |= (1 << al) as i16;
                                     }
                                 } else if ah == 0 {
-                                    ac_first(&mut r, st.ac[s.ac].as_ref().expect("checked"), ss, se, al, &mut st.eobrun, coefs)?;
+                                    ac_first(
+                                        &mut r,
+                                        st.ac[s.ac].as_ref().expect("checked"),
+                                        ss,
+                                        se,
+                                        al,
+                                        &mut st.eobrun,
+                                        coefs,
+                                    )?;
                                 } else {
-                                    ac_refine(&mut r, st.ac[s.ac].as_ref().expect("checked"), ss, se, al, &mut st.eobrun, coefs)?;
+                                    ac_refine(
+                                        &mut r,
+                                        st.ac[s.ac].as_ref().expect("checked"),
+                                        ss,
+                                        se,
+                                        al,
+                                        &mut st.eobrun,
+                                        coefs,
+                                    )?;
                                 }
                             } else {
-                                sequential(&mut r, st.dc[s.dc].as_ref().expect("checked"), st.ac[s.ac].as_ref().expect("checked"), &mut c.dc_pred, coefs)?;
+                                sequential(
+                                    &mut r,
+                                    st.dc[s.dc].as_ref().expect("checked"),
+                                    st.ac[s.ac].as_ref().expect("checked"),
+                                    &mut c.dc_pred,
+                                    coefs,
+                                )?;
                             }
                         } else {
-                            sequential(&mut r, st.dc[s.dc].as_ref().expect("checked"), st.ac[s.ac].as_ref().expect("checked"), &mut c.dc_pred, &mut block)?;
+                            sequential(
+                                &mut r,
+                                st.dc[s.dc].as_ref().expect("checked"),
+                                st.ac[s.ac].as_ref().expect("checked"),
+                                &mut c.dc_pred,
+                                &mut block,
+                            )?;
                             if luma_only && s.index != 0 {
                                 continue;
                             }
@@ -445,7 +562,13 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
     Ok(at)
 }
 
-fn sequential(r: &mut BitReader, dc: &HuffTable, ac: &HuffTable, pred: &mut i32, block: &mut [i16; 64]) -> Result<()> {
+fn sequential(
+    r: &mut BitReader,
+    dc: &HuffTable,
+    ac: &HuffTable,
+    pred: &mut i32,
+    block: &mut [i16; 64],
+) -> Result<()> {
     *block = [0; 64];
     let s = u32::from(r.decode(dc)?);
     let diff = r.receive_extend(s)?;
@@ -477,7 +600,15 @@ fn sequential(r: &mut BitReader, dc: &HuffTable, ac: &HuffTable, pred: &mut i32,
     Ok(())
 }
 
-fn ac_first(r: &mut BitReader, t: &HuffTable, ss: usize, se: usize, al: u32, eobrun: &mut u32, block: &mut [i16; 64]) -> Result<()> {
+fn ac_first(
+    r: &mut BitReader,
+    t: &HuffTable,
+    ss: usize,
+    se: usize,
+    al: u32,
+    eobrun: &mut u32,
+    block: &mut [i16; 64],
+) -> Result<()> {
     if *eobrun > 0 {
         *eobrun -= 1;
         return Ok(());
@@ -505,13 +636,25 @@ fn ac_first(r: &mut BitReader, t: &HuffTable, ss: usize, se: usize, al: u32, eob
     Ok(())
 }
 
-fn ac_refine(r: &mut BitReader, t: &HuffTable, ss: usize, se: usize, al: u32, eobrun: &mut u32, block: &mut [i16; 64]) -> Result<()> {
+fn ac_refine(
+    r: &mut BitReader,
+    t: &HuffTable,
+    ss: usize,
+    se: usize,
+    al: u32,
+    eobrun: &mut u32,
+    block: &mut [i16; 64],
+) -> Result<()> {
     let p1: i16 = 1 << al;
     let m1: i16 = (-1i32 << al) as i16;
     let mut k = ss;
     let refine = |r: &mut BitReader, c: &mut i16| {
         if r.bit() == 1 && (*c & p1) == 0 {
-            *c = if *c >= 0 { c.wrapping_add(p1) } else { c.wrapping_add(m1) };
+            *c = if *c >= 0 {
+                c.wrapping_add(p1)
+            } else {
+                c.wrapping_add(m1)
+            };
         }
     };
     if *eobrun == 0 {

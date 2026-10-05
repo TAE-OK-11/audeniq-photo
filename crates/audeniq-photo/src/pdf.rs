@@ -20,8 +20,7 @@ pub fn pages_from_pdfinfo(stdout: &[u8]) -> Result<u32> {
     let field = |name: &str| {
         text.lines()
             .filter_map(|l| l.split_once(':'))
-            .filter(|(k, _)| *k == name)
-            .last()
+            .rfind(|(k, _)| *k == name)
             .map(|(_, v)| v.trim().to_string())
     };
     let pages: u32 = field("Pages").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -34,11 +33,21 @@ pub fn pages_from_pdfinfo(stdout: &[u8]) -> Result<u32> {
 
 /// Arguments for `pdftoppm` (as the script ran it).
 pub fn pdftoppm_args(pages: u32) -> Vec<String> {
-    ["-q", "-jpeg", "-r", "110", "-scale-to", "2048", "-f", "1", "-l"]
-        .iter()
-        .map(|s| s.to_string())
-        .chain(std::iter::once(pages.to_string()))
-        .collect()
+    [
+        "-q",
+        "-jpeg",
+        "-r",
+        "110",
+        "-scale-to",
+        "2048",
+        "-f",
+        "1",
+        "-l",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain(std::iter::once(pages.to_string()))
+    .collect()
 }
 
 /// Write a PDF that contains only pages, JPEG image XObjects and the
@@ -58,8 +67,19 @@ pub fn image_only_pdf(rasters: &[Vec<u8>], deadline: &Deadline) -> Result<Vec<u8
             Ok(())
         };
         obj(&mut out, 1, b"<< /Type /Catalog /Pages 2 0 R >>")?;
-        let kids: Vec<String> = (0..rasters.len()).map(|i| format!("{} 0 R", 3 + i * 3)).collect();
-        obj(&mut out, 2, format!("<< /Type /Pages /Count {} /Kids [{}] >>", rasters.len(), kids.join(" ")).as_bytes())?;
+        let kids: Vec<String> = (0..rasters.len())
+            .map(|i| format!("{} 0 R", 3 + i * 3))
+            .collect();
+        obj(
+            &mut out,
+            2,
+            format!(
+                "<< /Type /Pages /Count {} /Kids [{}] >>",
+                rasters.len(),
+                kids.join(" ")
+            )
+            .as_bytes(),
+        )?;
         let mut total: u64 = 0;
         for (i, raster) in rasters.iter().enumerate() {
             deadline.check()?;
@@ -88,11 +108,19 @@ pub fn image_only_pdf(rasters: &[Vec<u8>], deadline: &Deadline) -> Result<Vec<u8
             obj(&mut out, n + 2, &content)?;
         }
         let start = out.len();
-        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len()).as_bytes());
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len()).as_bytes(),
+        );
         for off in &offsets[1..] {
             out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
         }
-        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n", offsets.len()).as_bytes());
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
         if out.is_empty() || out.len() > MAX_OUTPUT {
             return Err(Error::Limit("output exceeded limit"));
         }

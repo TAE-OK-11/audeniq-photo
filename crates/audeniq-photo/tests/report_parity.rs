@@ -5,10 +5,37 @@ use audeniq_photo::{color_report, metadata, provenance_fields};
 use serde_json::Value;
 use std::process::Command;
 
-const COLOR: &[&str] = &["ColorSpace", "ColorType", "PhotometricInterpretation", "SamplesPerPixel", "BitsPerSample", "BitDepth", "ColorComponents", "ProfileDescription", "ProfileID", "Orientation"];
-const PROV: &[&str] = &["Software", "CreatorTool", "DigitalSourceType", "Description", "Comment", "Encoder", "UserComment", "Parameters", "GenerationParameters", "Prompt", "Workflow"];
+const COLOR: &[&str] = &[
+    "ColorSpace",
+    "ColorType",
+    "PhotometricInterpretation",
+    "SamplesPerPixel",
+    "BitsPerSample",
+    "BitDepth",
+    "ColorComponents",
+    "ProfileDescription",
+    "ProfileID",
+    "Orientation",
+];
+const PROV: &[&str] = &[
+    "Software",
+    "CreatorTool",
+    "DigitalSourceType",
+    "Description",
+    "Comment",
+    "Encoder",
+    "UserComment",
+    "Parameters",
+    "GenerationParameters",
+    "Prompt",
+    "Workflow",
+];
 
-fn exiftool(path: &std::path::Path, args: &[&str], names: &[&str]) -> Option<serde_json::Map<String, Value>> {
+fn exiftool(
+    path: &std::path::Path,
+    args: &[&str],
+    names: &[&str],
+) -> Option<serde_json::Map<String, Value>> {
     let mut c = Command::new("exiftool");
     c.args(args);
     for n in names {
@@ -42,7 +69,13 @@ if os.path.exists(p): im.save(f"{d}/g.jpg", icc_profile=open(p,"rb").read())
 i=PngImagePlugin.PngInfo(); i.add_text("prompt",'{"1":{"class_type":"KSampler","inputs":{}}}'); i.add_text("workflow","x")
 im.save(f"{d}/h.png", pnginfo=i)
 "#;
-    if !Command::new("python3").args(["-c", py]).arg(&dir).status().map(|s| s.success()).unwrap_or(false) {
+    if !Command::new("python3")
+        .args(["-c", py])
+        .arg(&dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
         eprintln!("Pillow unavailable; skipping");
         return;
     }
@@ -54,13 +87,20 @@ im.save(f"{d}/h.png", pnginfo=i)
         let ours = color_report(&meta);
         let theirs = exiftool(&path, &["-j", "-n", "-s"], COLOR).unwrap();
         if Value::Object(ours.clone()) != Value::Object(theirs.clone()) {
-            failures.push(format!("{}: color ours {ours:?} exiftool {theirs:?}", path.display()));
+            failures.push(format!(
+                "{}: color ours {ours:?} exiftool {theirs:?}",
+                path.display()
+            ));
         }
         let ours = provenance_fields(&meta);
         let theirs = exiftool(&path, &["-j", "-n", "-G1", "-s"], PROV).unwrap();
         for (k, v) in &theirs {
             if ours.get(k) != Some(v) {
-                failures.push(format!("{}: provenance {k}={v} ours {:?}", path.display(), ours.get(k)));
+                failures.push(format!(
+                    "{}: provenance {k}={v} ours {:?}",
+                    path.display(),
+                    ours.get(k)
+                ));
             }
         }
         n += 1;

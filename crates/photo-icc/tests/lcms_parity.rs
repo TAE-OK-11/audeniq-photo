@@ -9,7 +9,10 @@ fn profiles() -> Vec<std::path::PathBuf> {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
                 let p = e.path();
-                if matches!(p.extension().and_then(|s| s.to_str()), Some("icc" | "ICM" | "icm")) {
+                if matches!(
+                    p.extension().and_then(|s| s.to_str()),
+                    Some("icc" | "ICM" | "icm")
+                ) {
                     v.push(p);
                 }
             }
@@ -25,11 +28,17 @@ fn source(channels: usize) -> Vec<u8> {
     let mut x = 12345u32;
     for i in 0..4096u32 {
         for c in 0..channels {
-            let level = if i < 256 { i as u8 } else {
+            let level = if i < 256 {
+                i as u8
+            } else {
                 x = x.wrapping_mul(1_103_515_245).wrapping_add(12345 + c as u32);
                 (x >> 16) as u8
             };
-            v.push(if i < 256 && c != 0 && channels == 4 { 0 } else { level });
+            v.push(if i < 256 && c != 0 && channels == 4 {
+                0
+            } else {
+                level
+            });
         }
     }
     v
@@ -44,7 +53,9 @@ fn close_to_lcms() {
     let mut checked = 0;
     for path in profiles() {
         let data = std::fs::read(&path).unwrap();
-        let Ok(profile) = Profile::parse(&data) else { continue };
+        let Ok(profile) = Profile::parse(&data) else {
+            continue;
+        };
         let channels = match &profile.color_space {
             b"RGB " => 3,
             b"GRAY" => 1,
@@ -65,7 +76,11 @@ fn close_to_lcms() {
             path.display(),
             out.display()
         );
-        let ok = Command::new("python3").args(["-c", &script]).output().map(|o| o.status.success()).unwrap_or(false);
+        let ok = Command::new("python3")
+            .args(["-c", &script])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         if !ok {
             report.push(format!("{}: lcms refused", path.display()));
             continue;
@@ -83,7 +98,12 @@ fn close_to_lcms() {
         let diffs: Vec<u8> = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).collect();
         let max = *diffs.iter().max().unwrap();
         let mean = diffs.iter().map(|&d| f64::from(d)).sum::<f64>() / diffs.len() as f64;
-        report.push(format!("{} ({}ch v{:x}): max {max} mean {mean:.3}", path.file_name().unwrap().to_string_lossy(), channels, profile.version >> 24));
+        report.push(format!(
+            "{} ({}ch v{:x}): max {max} mean {mean:.3}",
+            path.file_name().unwrap().to_string_lossy(),
+            channels,
+            profile.version >> 24
+        ));
         worst = worst.max(max);
         checked += 1;
     }
