@@ -1,0 +1,16 @@
+[package]
+name = "photo-qr"
+description = "QR code detection and decoding (port of quirc's identifier, standard RS decoding)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+photo-png.workspace = true

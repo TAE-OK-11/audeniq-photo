@@ -1,0 +1,20 @@
+[package]
+name = "photo-meta"
+description = "Metadata reader for images and audio (port of the ExifTool readers the backend used)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+photo-deflate.workspace = true
+photo-png.workspace = true
+photo-jpeg.workspace = true
+photo-icc.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1"
