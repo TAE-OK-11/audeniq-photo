@@ -30,6 +30,7 @@ pub struct Encoder<W: Write> {
     rows_left: u32,
     prev: Vec<u8>,
     filtered: Vec<u8>,
+    scratch: [Vec<u8>; 5],
 }
 
 impl<W: Write> Encoder<W> {
@@ -62,6 +63,7 @@ impl<W: Write> Encoder<W> {
             rows_left: height,
             prev: Vec::new(),
             filtered: vec![0; stride + 1],
+            scratch: std::array::from_fn(|_| vec![0; stride]),
         })
     }
 
@@ -72,9 +74,9 @@ impl<W: Write> Encoder<W> {
         }
         self.rows_left -= 1;
         let prev = (!self.prev.is_empty()).then_some(&self.prev[..]);
-        let filter = choose_filter(row, prev, self.bpp);
+        let filter = choose_filter(row, prev, self.bpp, &mut self.scratch);
         self.filtered[0] = filter;
-        apply_filter(filter, row, prev, self.bpp, &mut self.filtered[1..]);
+        self.filtered[1..].copy_from_slice(&self.scratch[filter as usize]);
         let z = self.z.as_mut().expect("encoder active");
         z.write(&self.filtered, &mut self.buf);
         self.prev.clear();
@@ -126,38 +128,69 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-#[inline(always)]
-fn predict(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, i: usize) -> u8 {
-    let a = if i >= bpp { row[i - bpp] } else { 0 };
-    let b = prev.map_or(0, |p| p[i]);
-    let c = if i >= bpp { prev.map_or(0, |p| p[i - bpp]) } else { 0 };
-    match filter {
-        0 => 0,
-        1 => a,
-        2 => b,
-        3 => ((u16::from(a) + u16::from(b)) >> 1) as u8,
-        _ => paeth(a, b, c),
+/// Filter one row into `out` (without the filter-type byte).
+fn apply_filter(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, out: &mut [u8]) {
+    let n = row.len();
+    let b = bpp.min(n);
+    match (filter, prev) {
+        (0, _) => out.copy_from_slice(row),
+        (1, _) | (4.., None) => {
+            out[..b].copy_from_slice(&row[..b]);
+            for i in b..n {
+                out[i] = row[i].wrapping_sub(row[i - bpp]);
+            }
+        }
+        (2, None) => out.copy_from_slice(row),
+        (2, Some(p)) => {
+            for i in 0..n {
+                out[i] = row[i].wrapping_sub(p[i]);
+            }
+        }
+        (3, None) => {
+            out[..b].copy_from_slice(&row[..b]);
+            for i in b..n {
+                out[i] = row[i].wrapping_sub(row[i - bpp] >> 1);
+            }
+        }
+        (3, Some(p)) => {
+            for i in 0..b {
+                out[i] = row[i].wrapping_sub(p[i] >> 1);
+            }
+            for i in b..n {
+                out[i] = row[i].wrapping_sub(((u16::from(row[i - bpp]) + u16::from(p[i])) >> 1) as u8);
+            }
+        }
+        (_, Some(p)) => {
+            for i in 0..b {
+                out[i] = row[i].wrapping_sub(p[i]);
+            }
+            for i in b..n {
+                out[i] = row[i].wrapping_sub(paeth(row[i - bpp], p[i], p[i - bpp]));
+            }
+        }
     }
 }
 
-/// libpng's minimum-sum-of-absolute-differences heuristic (as Pillow uses).
-fn choose_filter(row: &[u8], prev: Option<&[u8]>, bpp: usize) -> u8 {
+#[inline]
+fn abs_sum(v: &[u8]) -> u64 {
+    v.iter().map(|&x| u64::from((x as i8).unsigned_abs())).sum()
+}
+
+/// libpng's minimum-sum-of-absolute-differences heuristic (as Pillow
+/// uses). Each candidate is produced into a scratch row once, then the
+/// winner is copied; every loop is branch-free and vectorizes.
+fn choose_filter(row: &[u8], prev: Option<&[u8]>, bpp: usize, scratch: &mut [Vec<u8>; 5]) -> u8 {
     let mut best = (u64::MAX, 0u8);
     for filter in 0..5u8 {
-        let mut sum = 0u64;
-        for i in 0..row.len() {
-            let v = row[i].wrapping_sub(predict(filter, row, prev, bpp, i)) as i8;
-            sum += u64::from(v.unsigned_abs());
+        if prev.is_none() && (filter == 2 || filter == 4) {
+            continue; // identical to None / Sub on the first row
         }
+        let buf = &mut scratch[filter as usize];
+        apply_filter(filter, row, prev, bpp, buf);
+        let sum = abs_sum(buf);
         if sum < best.0 {
             best = (sum, filter);
         }
     }
     best.1
-}
-
-fn apply_filter(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, out: &mut [u8]) {
-    for i in 0..row.len() {
-        out[i] = row[i].wrapping_sub(predict(filter, row, prev, bpp, i));
-    }
 }

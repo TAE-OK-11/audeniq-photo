@@ -1,0 +1,25 @@
+[package]
+name = "audeniq-photo"
+description = "Audeniq image toolkit: probe, metadata reports, QR scan and upload sanitization in one library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+photo-deflate.workspace = true
+photo-png.workspace = true
+photo-jpeg.workspace = true
+photo-icc.workspace = true
+photo-meta.workspace = true
+photo-qr.workspace = true
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+photo-png.workspace = true
+photo-jpeg.workspace = true
+photo-deflate.workspace = true

@@ -15,7 +15,7 @@ mod huffman;
 mod idct;
 mod markers;
 
-pub use decoder::decode;
+pub use decoder::{decode, decode_luma};
 pub use encoder::{Encoder, Subsampling, encode};
 pub use markers::{ColorTransform, Component, FrameInfo, Info, Segment, read_info, segments};
 

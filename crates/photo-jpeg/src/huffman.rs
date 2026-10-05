@@ -11,6 +11,9 @@ pub(crate) struct HuffTable {
     maxcode: [i32; 18],
     valoffset: [i32; 18],
     symbols: [u8; 256],
+    /// stb_image-style fast AC: `value << 16 | run << 8 | bits` when code
+    /// and magnitude fit in the lookahead; 0 otherwise.
+    pub(crate) fast_ac: [i32; 1 << LOOKAHEAD],
 }
 
 impl HuffTable {
@@ -19,7 +22,7 @@ impl HuffTable {
         if total > 256 || total != symbols.len() {
             return Err(Error::Invalid("Huffman table size"));
         }
-        let mut t = HuffTable { lookup: [0; 1 << LOOKAHEAD], maxcode: [-1; 18], valoffset: [0; 18], symbols: [0; 256] };
+        let mut t = HuffTable { lookup: [0; 1 << LOOKAHEAD], maxcode: [-1; 18], valoffset: [0; 18], symbols: [0; 256], fast_ac: [0; 1 << LOOKAHEAD] };
         t.symbols[..total].copy_from_slice(symbols);
         let mut code: u32 = 0;
         let mut p = 0usize;
@@ -47,6 +50,21 @@ impl HuffTable {
             code <<= 1;
         }
         t.maxcode[17] = i32::MAX;
+        for i in 0..(1usize << LOOKAHEAD) {
+            let e = t.lookup[i];
+            if e == 0 {
+                continue;
+            }
+            let len = u32::from(e >> 8);
+            let rs = e as u8;
+            let (run, size) = (u32::from(rs >> 4), u32::from(rs & 15));
+            if size != 0 && len + size <= LOOKAHEAD {
+                let v = ((i as u32) >> (LOOKAHEAD - len - size)) & ((1 << size) - 1);
+                let v = v as i32;
+                let value = if v < (1 << (size - 1)) { v - (1 << size) + 1 } else { v };
+                t.fast_ac[i] = (value << 16) | ((run as i32) << 8) | (len + size) as i32;
+            }
+        }
         Ok(t)
     }
 }
@@ -69,6 +87,21 @@ impl<'a> BitReader<'a> {
 
     #[inline(always)]
     fn refill(&mut self) {
+        if self.marker.is_none() && self.pos + 8 <= self.data.len() {
+            let w = u64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().expect("8"));
+            let x = !w;
+            // No 0xFF byte among the next eight: take whole bytes at once.
+            if x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080 == 0 {
+                let k = (64 - self.cnt) / 8;
+                if k > 0 {
+                    let bytes = w >> (64 - 8 * k);
+                    self.buf |= bytes << (64 - self.cnt - 8 * k);
+                    self.pos += k as usize;
+                    self.cnt += 8 * k;
+                }
+                return;
+            }
+        }
         while self.cnt <= 56 {
             let byte = self.next_byte();
             self.buf |= u64::from(byte) << (56 - self.cnt);
@@ -125,6 +158,21 @@ impl<'a> BitReader<'a> {
         v
     }
 
+    /// Peek the lookahead window (refilling first if needed).
+    #[inline(always)]
+    pub(crate) fn peek_fast(&mut self) -> usize {
+        if self.cnt < 16 {
+            self.refill();
+        }
+        (self.buf >> (64 - LOOKAHEAD)) as usize
+    }
+
+    #[inline(always)]
+    pub(crate) fn skip(&mut self, n: u32) {
+        self.buf <<= n;
+        self.cnt -= n;
+    }
+
     #[inline(always)]
     pub(crate) fn bit(&mut self) -> u32 {
         self.bits(1)
@@ -157,14 +205,18 @@ impl<'a> BitReader<'a> {
         t.symbols.get(idx as usize).copied().ok_or(Error::Invalid("corrupt Huffman data"))
     }
 
-    /// `HUFF_EXTEND(get_bits(s), s)`.
+    /// `HUFF_EXTEND(get_bits(s), s)`. A magnitude category above 16 can
+    /// only come from a corrupt table.
     #[inline(always)]
-    pub(crate) fn receive_extend(&mut self, s: u32) -> i32 {
+    pub(crate) fn receive_extend(&mut self, s: u32) -> Result<i32> {
         if s == 0 {
-            return 0;
+            return Ok(0);
+        }
+        if s > 16 {
+            return Err(Error::Invalid("corrupt Huffman data"));
         }
         let v = self.bits(s) as i32;
-        if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v }
+        Ok(if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v })
     }
 
     /// Drop buffered bits and move to the marker ending this segment.

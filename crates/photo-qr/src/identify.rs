@@ -211,28 +211,45 @@ impl Quirc {
         q
     }
 
-    /// quirc's adaptive threshold (boustrophedon moving average).
+    /// quirc's adaptive threshold (boustrophedon moving average). The
+    /// per-pixel divisions by the window size use an exact reciprocal.
     fn threshold(&mut self, gray: &[u8]) {
         let (w, h) = (self.w, self.h);
         if w == 0 || h == 0 {
             return;
         }
-        let s = (w / 8).max(1) as i64;
-        let (mut avg_w, mut avg_u) = (0i64, 0i64);
-        let mut row_avg = vec![0i64; w];
+        let s = (w / 8).max(1) as u64;
+        // floor(x / s) for the running averages (x < 2^40): multiply-high
+        // with one correction step.
+        let m = u64::MAX / s + 1;
+        let div = |x: u64| -> u64 {
+            let mut q = ((u128::from(x) * u128::from(m)) >> 64) as u64;
+            if q * s > x {
+                q -= 1;
+            } else if (q + 1) * s <= x {
+                q += 1;
+            }
+            q
+        };
+        let (mut avg_w, mut avg_u) = (0u64, 0u64);
+        let mut row_avg = vec![0u64; w];
+        let denom = 200 * s;
         for y in 0..h {
             row_avg.iter_mut().for_each(|v| *v = 0);
             let row = &gray[y * w..(y + 1) * w];
             for x in 0..w {
                 let (wi, ui) = if y & 1 == 1 { (x, w - 1 - x) } else { (w - 1 - x, x) };
-                avg_w = (avg_w * (s - 1)) / s + i64::from(row[wi]);
-                avg_u = (avg_u * (s - 1)) / s + i64::from(row[ui]);
+                avg_w = div(avg_w * (s - 1)) + u64::from(row[wi]);
+                avg_u = div(avg_u * (s - 1)) + u64::from(row[ui]);
                 row_avg[wi] += avg_w;
                 row_avg[ui] += avg_u;
             }
             let out = &mut self.px[y * w..(y + 1) * w];
             for x in 0..w {
-                out[x] = if i64::from(row[x]) < row_avg[x] * (100 - 5) / (200 * s) { BLACK } else { WHITE };
+                // row[x] < avg * 95 / (200 s)  <=>  row[x] * 200 s < avg * 95
+                // up to floor rounding; compare exactly via the quotient.
+                let t = row_avg[x] * 95 / denom;
+                out[x] = if u64::from(row[x]) < t { BLACK } else { WHITE };
             }
         }
     }

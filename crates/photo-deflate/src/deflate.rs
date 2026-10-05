@@ -9,9 +9,6 @@ const MIN_MATCH: usize = 3;
 const MAX_MATCH: usize = 258;
 const MIN_LOOKAHEAD: usize = MAX_MATCH + MIN_MATCH + 1;
 const MAX_DIST: usize = W - MIN_LOOKAHEAD;
-const HASH_BITS: u32 = 15;
-const HASH_SIZE: usize = 1 << HASH_BITS;
-const HASH_SHIFT: u32 = HASH_BITS.div_ceil(3);
 const TOO_FAR: usize = 4096;
 const SYM_BUF: usize = 1 << 14;
 const MATCH_FLAG: u32 = 1 << 31;
@@ -138,29 +135,46 @@ impl BitWriter {
 }
 
 /// Streaming compressor producing a raw DEFLATE or a zlib stream.
+///
+/// Matching uses a 4-byte multiplicative hash with chains of absolute
+/// positions (no table rebasing when the window slides) and zlib's lazy
+/// evaluation rules and per-level limits.
 pub struct Compressor {
     level: u8,
     cfg: Config,
     zlib: bool,
     header_done: bool,
     adler: Adler32,
-    window: Vec<u8>,
-    head: Vec<u16>,
-    prev: Vec<u16>,
-    strstart: usize,
-    lookahead: usize,
-    ins_h: usize,
-    hash_ready: bool,
-    match_length: usize,
-    match_start: usize,
-    prev_length: usize,
-    prev_match: usize,
-    match_available: bool,
+    /// Buffered input; `win[0]` is absolute position `base`.
+    win: Vec<u8>,
+    base: usize,
+    /// Next index in `win` to process.
+    pos: usize,
+    /// Absolute position + 1 of the latest string per hash (0 = none).
+    head: Vec<u32>,
+    /// Previous position + 1 in the same chain, indexed by position & WMASK.
+    prev: Vec<u32>,
+    /// Lazy state: a match (or literal) found at `pos - 1` not yet emitted.
+    pending: bool,
+    pending_len: usize,
+    pending_dist: usize,
     syms: Vec<u32>,
     lit_freq: [u32; 286],
     dist_freq: [u32; 30],
     bits: BitWriter,
     stored: Vec<u8>,
+}
+
+const CHUNK: usize = 64 * 1024;
+const HASH4_BITS: u32 = 16;
+
+/// Multiplicative hash of the next four bytes. (Hashing three, as zlib
+/// does, floods the chains with weak candidates: slower and, on image
+/// rows, larger output.)
+#[inline(always)]
+fn hash4(w: &[u8], p: usize) -> usize {
+    let v = u32::from_le_bytes([w[p], w[p + 1], w[p + 2], w[p + 3]]);
+    (v.wrapping_mul(0x1E35_A7BD) >> (32 - HASH4_BITS)) as usize
 }
 
 impl Compressor {
@@ -176,26 +190,22 @@ impl Compressor {
 
     fn new(level: Level, zlib: bool) -> Self {
         let l = level.0;
-        let lazy = l > 0;
+        let lz = l > 0;
         Compressor {
             level: l,
             cfg: CONFIGS[l as usize],
             zlib,
             header_done: false,
             adler: Adler32::new(),
-            window: if lazy { vec![0; 2 * W] } else { Vec::new() },
-            head: if lazy { vec![0; HASH_SIZE] } else { Vec::new() },
-            prev: if lazy { vec![0; W] } else { Vec::new() },
-            strstart: 0,
-            lookahead: 0,
-            ins_h: 0,
-            hash_ready: false,
-            match_length: MIN_MATCH - 1,
-            match_start: 0,
-            prev_length: MIN_MATCH - 1,
-            prev_match: 0,
-            match_available: false,
-            syms: Vec::with_capacity(if lazy { SYM_BUF } else { 0 }),
+            win: Vec::with_capacity(if lz { 2 * W + CHUNK + MIN_LOOKAHEAD } else { 0 }),
+            base: 0,
+            pos: 0,
+            head: if lz { vec![0; 1 << HASH4_BITS] } else { Vec::new() },
+            prev: if lz { vec![0; W] } else { Vec::new() },
+            pending: false,
+            pending_len: 0,
+            pending_dist: 0,
+            syms: Vec::with_capacity(if lz { SYM_BUF } else { 0 }),
             lit_freq: [0; 286],
             dist_freq: [0; 30],
             bits: BitWriter { buf: 0, n: 0 },
@@ -237,15 +247,11 @@ impl Compressor {
             return;
         }
         while !data.is_empty() {
-            if self.strstart >= W + MAX_DIST {
-                self.slide();
-            }
-            let end = self.strstart + self.lookahead;
-            let n = (2 * W - end).min(data.len());
-            self.window[end..end + n].copy_from_slice(&data[..n]);
-            self.lookahead += n;
+            let n = CHUNK.min(data.len());
+            self.win.extend_from_slice(&data[..n]);
             data = &data[n..];
             self.process(false, out);
+            self.slide();
         }
     }
 
@@ -256,11 +262,6 @@ impl Compressor {
             self.flush_stored(true, out);
         } else {
             self.process(true, out);
-            if self.match_available {
-                let lit = self.window[self.strstart - 1];
-                self.literal(lit);
-                self.match_available = false;
-            }
             self.flush_block(true, out);
         }
         self.bits.align(out);
@@ -280,124 +281,59 @@ impl Compressor {
         self.stored.clear();
     }
 
+    /// Drop window bytes no match can reach any more.
     fn slide(&mut self) {
-        self.window.copy_within(W..2 * W, 0);
-        self.match_start = self.match_start.saturating_sub(W);
-        self.prev_match = self.prev_match.saturating_sub(W);
-        self.strstart -= W;
-        for h in self.head.iter_mut().chain(self.prev.iter_mut()) {
-            *h = if usize::from(*h) >= W { *h - W as u16 } else { 0 };
+        if self.pos >= W + MAX_DIST {
+            self.win.drain(..W);
+            self.pos -= W;
+            self.base += W;
+            // Keep absolute positions far from u32 overflow.
+            if self.base > (u32::MAX as usize) - (1 << 26) {
+                let shift = self.base - W;
+                for v in self.head.iter_mut().chain(self.prev.iter_mut()) {
+                    *v = (*v as usize).saturating_sub(shift) as u32;
+                }
+                self.base -= shift;
+            }
         }
     }
 
     #[inline(always)]
-    fn update_hash(&mut self, c: u8) {
-        self.ins_h = ((self.ins_h << HASH_SHIFT) ^ usize::from(c)) & (HASH_SIZE - 1);
+    fn insert(head: &mut [u32], prev: &mut [u32], win: &[u8], base: usize, p: usize) -> usize {
+        let h = hash4(win, p);
+        let abs = base + p + 1;
+        let old = head[h];
+        prev[(abs - 1) & WMASK] = old;
+        head[h] = abs as u32;
+        old as usize
     }
 
+    /// Longest match at `p` among chain candidates starting at `cand`
+    /// (absolute + 1). Returns (length, distance); length < MIN_MATCH = none.
     #[inline(always)]
-    fn insert(&mut self, s: usize) -> usize {
-        self.update_hash(self.window[s + MIN_MATCH - 1]);
-        let head = self.head[self.ins_h];
-        self.prev[s & WMASK] = head;
-        self.head[self.ins_h] = s as u16;
-        usize::from(head)
-    }
-
-    fn process(&mut self, flush: bool, out: &mut Vec<u8>) {
-        loop {
-            if self.lookahead < MIN_LOOKAHEAD && !(flush && self.lookahead > 0) {
-                return;
-            }
-            if self.strstart >= W + MAX_DIST {
-                // More input space is needed before continuing; `write`
-                // slides when it next adds data. When flushing, slide now.
-                if !flush {
-                    return;
-                }
-                self.slide();
-            }
-            if !self.hash_ready && self.lookahead >= MIN_MATCH {
-                self.ins_h = 0;
-                self.update_hash(self.window[self.strstart]);
-                self.update_hash(self.window[self.strstart + 1]);
-                self.hash_ready = true;
-            }
-            let mut hash_head = 0;
-            if self.lookahead >= MIN_MATCH {
-                hash_head = self.insert(self.strstart);
-            }
-            self.prev_length = self.match_length;
-            self.prev_match = self.match_start;
-            self.match_length = MIN_MATCH - 1;
-            if hash_head != 0 && self.prev_length < self.cfg.lazy && self.strstart - hash_head <= MAX_DIST {
-                self.match_length = self.longest_match(hash_head);
-                if self.match_length == MIN_MATCH && self.strstart - self.match_start > TOO_FAR {
-                    self.match_length = MIN_MATCH - 1;
-                }
-            }
-            if self.prev_length >= MIN_MATCH && self.match_length <= self.prev_length {
-                let max_insert = self.strstart + self.lookahead - MIN_MATCH;
-                let dist = self.strstart - 1 - self.prev_match;
-                self.matched(dist, self.prev_length);
-                self.lookahead -= self.prev_length - 1;
-                let mut n = self.prev_length - 2;
-                while n > 0 {
-                    self.strstart += 1;
-                    if self.strstart <= max_insert {
-                        self.insert(self.strstart);
-                    }
-                    n -= 1;
-                }
-                self.match_available = false;
-                self.match_length = MIN_MATCH - 1;
-                self.strstart += 1;
-                if self.syms.len() >= SYM_BUF {
-                    self.flush_block(false, out);
-                }
-            } else if self.match_available {
-                let lit = self.window[self.strstart - 1];
-                self.literal(lit);
-                if self.syms.len() >= SYM_BUF {
-                    self.flush_block(false, out);
-                }
-                self.strstart += 1;
-                self.lookahead -= 1;
-            } else {
-                self.match_available = true;
-                self.strstart += 1;
-                self.lookahead -= 1;
-            }
-        }
-    }
-
-    fn longest_match(&mut self, mut cur: usize) -> usize {
+    fn longest(&self, p: usize, mut cand: usize, min_len: usize, max_len: usize) -> (usize, usize) {
+        let win = &self.win;
+        let abs = self.base + p + 1;
+        let limit = abs.saturating_sub(MAX_DIST);
         let mut chain = self.cfg.chain;
-        let max_len = MAX_MATCH.min(self.lookahead);
-        let mut best = self.prev_length;
-        if best >= max_len {
-            return max_len.min(best);
-        }
-        if self.prev_length >= self.cfg.good {
+        if min_len >= self.cfg.good {
             chain >>= 2;
         }
-        let nice = self.cfg.nice.min(self.lookahead);
-        let scan = self.strstart;
-        let limit = scan.saturating_sub(MAX_DIST);
-        let win = &self.window;
-        loop {
-            let m = cur;
-            if win[m + best] == win[scan + best]
-                && win[m + best - 1] == win[scan + best - 1]
-                && win[m] == win[scan]
-                && win[m + 1] == win[scan + 1]
-            {
-                let a = &win[scan..scan + max_len];
-                let b = &win[m..m + max_len];
-                let mut len = 2;
+        let nice = self.cfg.nice.min(max_len);
+        let mut best = min_len.max(MIN_MATCH - 1);
+        let mut best_dist = 0;
+        if best >= max_len {
+            return (0, 0);
+        }
+        let cur = &win[p..p + max_len];
+        while cand > limit && chain > 0 {
+            let ci = cand - 1 - self.base;
+            let m = &win[ci..ci + max_len];
+            if m[best] == cur[best] && m[0] == cur[0] && m[1] == cur[1] && m[2] == cur[2] {
+                let mut len = 0;
                 while len + 8 <= max_len {
-                    let x = u64::from_le_bytes(a[len..len + 8].try_into().unwrap())
-                        ^ u64::from_le_bytes(b[len..len + 8].try_into().unwrap());
+                    let x = u64::from_le_bytes(m[len..len + 8].try_into().unwrap())
+                        ^ u64::from_le_bytes(cur[len..len + 8].try_into().unwrap());
                     if x != 0 {
                         len += (x.trailing_zeros() / 8) as usize;
                         break;
@@ -405,26 +341,107 @@ impl Compressor {
                     len += 8;
                 }
                 if len + 8 > max_len {
-                    while len < max_len && a[len] == b[len] {
+                    while len < max_len && m[len] == cur[len] {
                         len += 1;
                     }
                 }
-                let len = len.min(max_len);
                 if len > best {
-                    self.match_start = m;
                     best = len;
+                    best_dist = abs - cand;
                     if len >= nice {
                         break;
                     }
                 }
             }
-            cur = usize::from(self.prev[m & WMASK]);
-            chain -= 1;
-            if cur <= limit || chain == 0 {
+            let next = self.prev[(cand - 1) & WMASK] as usize;
+            if next >= cand {
                 break;
             }
+            cand = next;
+            chain -= 1;
         }
-        best.min(self.lookahead)
+        if best_dist == 0 || (best == MIN_MATCH && best_dist > TOO_FAR) {
+            (0, 0)
+        } else {
+            (best, best_dist)
+        }
+    }
+
+    fn process(&mut self, flush: bool, out: &mut Vec<u8>) {
+        let lazy_limit = self.cfg.lazy;
+        let greedy = self.level <= 3;
+        loop {
+            let end = self.win.len();
+            let avail = end - self.pos;
+            if avail == 0 || (!flush && avail < MIN_LOOKAHEAD) {
+                break;
+            }
+            let p = self.pos;
+            let max_len = MAX_MATCH.min(avail);
+            let mut cand = 0;
+            if avail >= 4 {
+                cand = Self::insert(&mut self.head, &mut self.prev, &self.win, self.base, p);
+            }
+            if greedy {
+                let (len, dist) = if cand != 0 && max_len >= MIN_MATCH { self.longest(p, cand, 0, max_len) } else { (0, 0) };
+                if len >= MIN_MATCH {
+                    self.matched(dist, len);
+                    // zlib deflate_fast: insert inside short matches only.
+                    if len <= lazy_limit {
+                        for q in p + 1..p + len {
+                            if q + 4 <= end {
+                                Self::insert(&mut self.head, &mut self.prev, &self.win, self.base, q);
+                            }
+                        }
+                    }
+                    self.pos += len;
+                } else {
+                    let b = self.win[p];
+                    self.literal(b);
+                    self.pos += 1;
+                }
+                if self.syms.len() >= SYM_BUF {
+                    self.flush_block(false, out);
+                }
+                continue;
+            }
+            // Lazy matching (zlib deflate_slow).
+            let (len, dist) = if cand != 0 && max_len >= MIN_MATCH && (!self.pending || self.pending_len < lazy_limit) {
+                self.longest(p, cand, if self.pending { self.pending_len } else { 0 }, max_len)
+            } else {
+                (0, 0)
+            };
+            if self.pending && self.pending_len >= MIN_MATCH && len <= self.pending_len {
+                // Emit the match at p - 1 and skip over it.
+                let (plen, pdist) = (self.pending_len, self.pending_dist);
+                self.matched(pdist, plen);
+                let stop = p - 1 + plen;
+                for q in p + 1..stop {
+                    if q + 4 <= end {
+                        Self::insert(&mut self.head, &mut self.prev, &self.win, self.base, q);
+                    }
+                }
+                self.pos = stop;
+                self.pending = false;
+            } else {
+                if self.pending {
+                    let b = self.win[p - 1];
+                    self.literal(b);
+                }
+                self.pending = true;
+                self.pending_len = len;
+                self.pending_dist = dist;
+                self.pos += 1;
+            }
+            if self.syms.len() >= SYM_BUF {
+                self.flush_block(false, out);
+            }
+        }
+        if flush && self.pending {
+            let b = self.win[self.pos - 1];
+            self.literal(b);
+            self.pending = false;
+        }
     }
 
     #[inline(always)]

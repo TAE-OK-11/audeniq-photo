@@ -292,8 +292,11 @@ fn dynamic(bits: &mut Bits) -> Result<(Box<Table>, Box<Table>)> {
         return Err(Error::Invalid("bad code counts"));
     }
     let mut clens = [0u8; 19];
-    bits.refill()?;
-    for &i in CLEN_ORDER.iter().take(ncode) {
+    // 19 codes need 57 bits; one refill only guarantees 56.
+    for (n, &i) in CLEN_ORDER.iter().take(ncode).enumerate() {
+        if n % 16 == 0 {
+            bits.refill()?;
+        }
         clens[i] = bits.take(3) as u8;
     }
     let ctable = Table::new(&clens)?;

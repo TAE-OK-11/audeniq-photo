@@ -40,7 +40,7 @@ impl Plane {
     }
 
     /// Upsampled samples of output row `y` into `out` (len >= image width).
-    fn upsample(&self, m: Method, y: usize, out: &mut [u8]) {
+    fn upsample(&self, m: Method, y: usize, out: &mut [u8], tmp: &mut Vec<u8>, sums: &mut Vec<u32>) {
         let w = out.len();
         match m {
             Method::Full => out.copy_from_slice(&self.row(y)[..w]),
@@ -50,7 +50,7 @@ impl Plane {
                     *o = src[x / self.h_ratio];
                 }
             }
-            Method::H2V1Fancy => h2v1(self.row(y), self.width, out),
+            Method::H2V1Fancy => h2v1(self.row(y), self.width, out, tmp),
             Method::H1V2Fancy => {
                 let iy = y / 2;
                 let (near, bias) = self.neighbor(y, iy);
@@ -63,7 +63,7 @@ impl Plane {
             Method::H2V2Fancy => {
                 let iy = y / 2;
                 let (near, _) = self.neighbor(y, iy);
-                h2v2(self.row(iy), self.row(near), self.width, out);
+                h2v2(self.row(iy), self.row(near), self.width, out, tmp, sums);
             }
         }
     }
@@ -78,53 +78,43 @@ impl Plane {
     }
 }
 
-fn h2v1(inp: &[u8], dw: usize, out: &mut [u8]) {
-    let w = out.len();
-    let mut tmp = [0u8; 2];
-    let mut put = |i: usize, v: u32| {
-        if i < w {
-            out[i] = v as u8;
-        } else if i - w < 2 {
-            tmp[i - w] = v as u8;
-        }
-    };
-    let p = |i: usize| u32::from(inp[i]);
-    put(0, p(0));
-    put(1, (p(0) * 3 + p(1) + 2) >> 2);
+fn h2v1(inp: &[u8], dw: usize, out: &mut [u8], tmp: &mut Vec<u8>) {
+    tmp.resize(2 * dw, 0);
+    let t = &mut tmp[..2 * dw];
+    let p = &inp[..dw];
+    t[0] = p[0];
+    t[1] = ((u32::from(p[0]) * 3 + u32::from(p[1]) + 2) >> 2) as u8;
     for c in 1..dw - 1 {
-        let v = p(c) * 3;
-        put(2 * c, (v + p(c - 1) + 1) >> 2);
-        put(2 * c + 1, (v + p(c + 1) + 2) >> 2);
+        let v = u32::from(p[c]) * 3;
+        t[2 * c] = ((v + u32::from(p[c - 1]) + 1) >> 2) as u8;
+        t[2 * c + 1] = ((v + u32::from(p[c + 1]) + 2) >> 2) as u8;
     }
     let l = dw - 1;
-    put(2 * l, (p(l) * 3 + p(l - 1) + 1) >> 2);
-    put(2 * l + 1, p(l));
+    t[2 * l] = ((u32::from(p[l]) * 3 + u32::from(p[l - 1]) + 1) >> 2) as u8;
+    t[2 * l + 1] = p[l];
+    let w = out.len();
+    out.copy_from_slice(&t[..w]);
 }
 
-fn h2v2(in0: &[u8], in1: &[u8], dw: usize, out: &mut [u8]) {
-    let w = out.len();
-    let mut put = |i: usize, v: u32| {
-        if i < w {
-            out[i] = v as u8;
-        }
-    };
-    let sum = |c: usize| u32::from(in0[c]) * 3 + u32::from(in1[c]);
-    let mut this = sum(0);
-    let mut next = sum(1);
-    put(0, (this * 4 + 8) >> 4);
-    put(1, (this * 3 + next + 7) >> 4);
-    let mut last = this;
-    this = next;
+fn h2v2(in0: &[u8], in1: &[u8], dw: usize, out: &mut [u8], tmp: &mut Vec<u8>, sums: &mut Vec<u32>) {
+    sums.resize(dw, 0);
+    for (s, (&a, &b)) in sums.iter_mut().zip(in0[..dw].iter().zip(&in1[..dw])) {
+        *s = u32::from(a) * 3 + u32::from(b);
+    }
+    tmp.resize(2 * dw, 0);
+    let t = &mut tmp[..2 * dw];
+    let s = &sums[..dw];
+    t[0] = ((s[0] * 4 + 8) >> 4) as u8;
+    t[1] = ((s[0] * 3 + s[1] + 7) >> 4) as u8;
     for c in 1..dw - 1 {
-        next = sum(c + 1);
-        put(2 * c, (this * 3 + last + 8) >> 4);
-        put(2 * c + 1, (this * 3 + next + 7) >> 4);
-        last = this;
-        this = next;
+        t[2 * c] = ((s[c] * 3 + s[c - 1] + 8) >> 4) as u8;
+        t[2 * c + 1] = ((s[c] * 3 + s[c + 1] + 7) >> 4) as u8;
     }
     let l = dw - 1;
-    put(2 * l, (this * 3 + last + 8) >> 4);
-    put(2 * l + 1, (this * 4 + 7) >> 4);
+    t[2 * l] = ((s[l] * 3 + s[l - 1] + 8) >> 4) as u8;
+    t[2 * l + 1] = ((s[l] * 4 + 7) >> 4) as u8;
+    let w = out.len();
+    out.copy_from_slice(&t[..w]);
 }
 
 struct Tables {
@@ -178,13 +168,14 @@ pub(crate) fn convert(
     let methods: Vec<Method> = planes.iter().map(method).collect();
     let mut data = vec![0u8; width * height * ch];
     let mut rows: Vec<Vec<u8>> = (0..ch).map(|_| vec![0u8; width]).collect();
+    let (mut tmp, mut sums) = (Vec::new(), Vec::new());
     let t = tables();
     for (y, out) in data.chunks_exact_mut(width * ch).enumerate() {
         if y % 64 == 0 {
             deadline.check()?;
         }
         for (c, p) in planes.iter().enumerate() {
-            p.upsample(methods[c], y, &mut rows[c]);
+            p.upsample(methods[c], y, &mut rows[c], &mut tmp, &mut sums);
         }
         match transform {
             ColorTransform::Gray => out.copy_from_slice(&rows[0]),
@@ -195,17 +186,7 @@ pub(crate) fn convert(
                     out[3 * x + 2] = rows[2][x];
                 }
             }
-            ColorTransform::YCbCr => {
-                let (ys, cbs, crs) = (&rows[0], &rows[1], &rows[2]);
-                for x in 0..width {
-                    let yy = i32::from(ys[x]);
-                    let cb = cbs[x] as usize;
-                    let cr = crs[x] as usize;
-                    out[3 * x] = clamp(yy + t.cr_r[cr]);
-                    out[3 * x + 1] = clamp(yy + ((t.cb_g[cb] + t.cr_g[cr]) >> 16));
-                    out[3 * x + 2] = clamp(yy + t.cb_b[cb]);
-                }
-            }
+            ColorTransform::YCbCr => ycc_row(&rows[0], &rows[1], &rows[2], out),
             ColorTransform::Cmyk => {
                 for x in 0..width {
                     for c in 0..4 {
@@ -227,4 +208,23 @@ pub(crate) fn convert(
         }
     }
     Ok(Image { width: width as u32, height: height as u32, format, data })
+}
+
+/// jdcolor.c `ycc_rgb_convert` with the table entries computed inline
+/// (identical integers; branch-free so it vectorizes).
+fn ycc_row(ys: &[u8], cbs: &[u8], crs: &[u8], out: &mut [u8]) {
+    const CR_R: i32 = 91881; // FIX(1.40200)
+    const CB_B: i32 = 116130; // FIX(1.77200)
+    const CR_G: i32 = 46802; // FIX(0.71414)
+    const CB_G: i32 = 22554; // FIX(0.34414)
+    const HALF: i32 = 1 << 15;
+    for (((o, &y), &cb), &cr) in out.chunks_exact_mut(3).zip(ys).zip(cbs).zip(crs) {
+        let (y, cb, cr) = (i32::from(y), i32::from(cb) - 128, i32::from(cr) - 128);
+        let r = y + ((CR_R * cr + HALF) >> 16);
+        let g = y + ((-CB_G * cb + HALF - CR_G * cr) >> 16);
+        let b = y + ((CB_B * cb + HALF) >> 16);
+        o[0] = r.clamp(0, 255) as u8;
+        o[1] = g.clamp(0, 255) as u8;
+        o[2] = b.clamp(0, 255) as u8;
+    }
 }

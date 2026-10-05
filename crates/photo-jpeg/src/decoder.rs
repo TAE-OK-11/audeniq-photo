@@ -48,6 +48,8 @@ struct State {
     frame: Option<Frame>,
     scans: usize,
     eobrun: u32,
+    /// Only component 0 needs pixels (luma decode of YCbCr/YCCK).
+    luma_only: bool,
 }
 
 fn parse_dqt(data: &[u8], qt: &mut [Option<[u16; 64]>; 4]) -> Result<()> {
@@ -136,16 +138,16 @@ impl Frame {
         Ok(Frame { info, comps, max_h, max_v, mcus_x, mcus_y, progressive, buffered: None })
     }
 
-    fn allocate(&mut self, buffered: bool, limits: &Limits) -> Result<()> {
+    fn allocate(&mut self, buffered: bool, luma_only: bool, limits: &Limits) -> Result<()> {
         let mut total: u64 = 0;
         for c in &self.comps {
             total += (c.bw * c.bh * 64) as u64 * if buffered { 2 } else { 1 };
         }
         limits.alloc_size(total, 1)?;
-        for c in &mut self.comps {
+        for (i, c) in self.comps.iter_mut().enumerate() {
             if buffered {
                 c.coefs = vec![0; c.bw * c.bh * 64];
-            } else {
+            } else if i == 0 || !luma_only {
                 c.plane = vec![0; c.bw * c.bh * 64];
             }
         }
@@ -163,10 +165,21 @@ struct ScanComp {
 /// Decode a JPEG to 8-bit pixels: Gray8, Rgb8 or Cmyk8 (Adobe-inverted
 /// back to normal CMYK, as Pillow presents it).
 pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info, Image)> {
+    decode_with(data, limits, deadline, false)
+}
+
+/// Decode only the luminance of a YCbCr/YCCK JPEG as Gray8 (chroma is
+/// entropy-decoded but never transformed). Other color spaces decode fully.
+/// For detectors (QR) that only need intensity.
+pub fn decode_luma(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info, Image)> {
+    decode_with(data, limits, deadline, true)
+}
+
+fn decode_with(data: &[u8], limits: &Limits, deadline: &Deadline, luma: bool) -> Result<(Info, Image)> {
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return Err(Error::Invalid("not a JPEG file"));
     }
-    let mut st = State { qt: [None; 4], dc: Default::default(), ac: Default::default(), restart: 0, frame: None, scans: 0, eobrun: 0 };
+    let mut st = State { qt: [None; 4], dc: Default::default(), ac: Default::default(), restart: 0, frame: None, scans: 0, eobrun: 0, luma_only: false };
     let mut jfif = false;
     let mut adobe = None;
     let mut icc_chunks = Vec::new();
@@ -212,6 +225,11 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
                 st.frame = Some(Frame::new(FrameInfo::parse(marker, body)?, limits)?);
             }
             0xDA => {
+                if st.scans == 0 && luma {
+                    if let Some(f) = &st.frame {
+                        st.luma_only = matches!(color_transform(&f.info, jfif, adobe), ColorTransform::YCbCr | ColorTransform::Ycck);
+                    }
+                }
                 st.scans += 1;
                 if st.scans > MAX_SCANS {
                     return Err(Error::Limit("JPEG scan count"));
@@ -235,6 +253,10 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
         return Err(Error::Invalid("no scans"));
     }
     let transform = color_transform(&frame.info, jfif, adobe);
+    let luma_only = st.luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
+    if luma_only {
+        frame.comps.truncate(1);
+    }
     if frame.buffered == Some(true) {
         for c in &mut frame.comps {
             deadline.check()?;
@@ -267,7 +289,7 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
             v_ratio: max_v / c.v,
         })
         .collect();
-    let image = convert(&planes, transform, w, h, deadline)?;
+    let image = convert(&planes, if luma_only { ColorTransform::Gray } else { transform }, w, h, deadline)?;
     drop(planes);
     let info = Info {
         icc_profile: assemble_icc(&mut icc_chunks),
@@ -279,9 +301,6 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
         xmp,
         comments,
     };
-    if matches!(transform, ColorTransform::Gray) && image.format != photo_core::PixelFormat::Gray8 {
-        return Err(Error::Invalid("color transform"));
-    }
     Ok((info, image))
 }
 
@@ -321,11 +340,12 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
     }
     if frame.buffered.is_none() {
         let direct = !frame.progressive && ns == frame.comps.len();
-        frame.allocate(!direct, limits)?;
+        frame.allocate(!direct, st.luma_only, limits)?;
     } else if frame.buffered == Some(false) {
         return Err(Error::Invalid("extra scan in single-scan sequential JPEG"));
     }
     let buffered = frame.buffered == Some(true);
+    let luma_only = st.luma_only;
     for s in &sc {
         let c = &mut frame.comps[s.index];
         if c.quant.is_none() {
@@ -385,7 +405,7 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
                                     if ah == 0 {
                                         let t = st.dc[s.dc].as_ref().expect("checked");
                                         let s0 = u32::from(r.decode(t)?);
-                                        let diff = r.receive_extend(s0);
+                                        let diff = r.receive_extend(s0)?;
                                         c.dc_pred = c.dc_pred.wrapping_add(diff);
                                         coefs[0] = (c.dc_pred << al) as i16;
                                     } else if r.bit() == 1 {
@@ -401,6 +421,9 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
                             }
                         } else {
                             sequential(&mut r, st.dc[s.dc].as_ref().expect("checked"), st.ac[s.ac].as_ref().expect("checked"), &mut c.dc_pred, &mut block)?;
+                            if luma_only && s.index != 0 {
+                                continue;
+                            }
                             let stride = c.bw * 8;
                             let q = c.quant.as_ref().expect("latched");
                             idct_islow(&block, q, &mut c.plane[by * 8 * stride + bx * 8..], stride);
@@ -425,16 +448,24 @@ fn scan(data: &[u8], header: &[u8], start: usize, st: &mut State, limits: &Limit
 fn sequential(r: &mut BitReader, dc: &HuffTable, ac: &HuffTable, pred: &mut i32, block: &mut [i16; 64]) -> Result<()> {
     *block = [0; 64];
     let s = u32::from(r.decode(dc)?);
-    let diff = r.receive_extend(s);
+    let diff = r.receive_extend(s)?;
     *pred = pred.wrapping_add(diff);
     block[0] = *pred as i16;
     let mut k = 1;
     while k < 64 {
+        let fac = ac.fast_ac[r.peek_fast()];
+        if fac != 0 {
+            r.skip((fac & 0xFF) as u32);
+            k += ((fac >> 8) & 15) as usize;
+            block[ZIGZAG[k]] = (fac >> 16) as i16;
+            k += 1;
+            continue;
+        }
         let rs = r.decode(ac)?;
         let (run, s) = (usize::from(rs >> 4), u32::from(rs & 15));
         if s != 0 {
             k += run;
-            let v = r.receive_extend(s);
+            let v = r.receive_extend(s)?;
             block[ZIGZAG[k]] = v as i16;
         } else if run != 15 {
             break;
@@ -457,7 +488,7 @@ fn ac_first(r: &mut BitReader, t: &HuffTable, ss: usize, se: usize, al: u32, eob
         let (run, s) = (u32::from(rs >> 4), u32::from(rs & 15));
         if s != 0 {
             k += run as usize;
-            let v = r.receive_extend(s);
+            let v = r.receive_extend(s)?;
             block[ZIGZAG[k]] = (v << al) as i16;
         } else if run == 15 {
             k += 15;

@@ -100,58 +100,81 @@ fn reciprocal(divisor: u32) -> Recip {
 const CONST_BITS: i32 = 13;
 const PASS1_BITS: i32 = 2;
 
-#[inline(always)]
-fn descale(x: i32, n: i32) -> i32 {
-    (x + (1 << (n - 1))) >> n
-}
-
-/// `jpeg_fdct_islow` (in place, natural order, output scaled by 8).
+/// `jpeg_fdct_islow` (natural order in and out, output scaled by 8), on
+/// eight lanes at a time so it vectorizes; integer results are identical.
 fn fdct_islow(d: &mut [i32; 64]) {
-    for pass in 0..2 {
-        for i in 0..8 {
-            let idx = |k: usize| if pass == 0 { i * 8 + k } else { k * 8 + i };
-            let p = |k: usize| d[idx(k)];
-            let tmp0 = p(0) + p(7);
-            let tmp7 = p(0) - p(7);
-            let tmp1 = p(1) + p(6);
-            let tmp6 = p(1) - p(6);
-            let tmp2 = p(2) + p(5);
-            let tmp5 = p(2) - p(5);
-            let tmp3 = p(3) + p(4);
-            let tmp4 = p(3) - p(4);
-            let tmp10 = tmp0 + tmp3;
-            let tmp13 = tmp0 - tmp3;
-            let tmp11 = tmp1 + tmp2;
-            let tmp12 = tmp1 - tmp2;
-            let (n, s) = if pass == 0 { (CONST_BITS - PASS1_BITS, 0) } else { (CONST_BITS + PASS1_BITS, PASS1_BITS) };
-            if pass == 0 {
-                d[idx(0)] = (tmp10 + tmp11) << PASS1_BITS;
-                d[idx(4)] = (tmp10 - tmp11) << PASS1_BITS;
-            } else {
-                d[idx(0)] = descale(tmp10 + tmp11, s);
-                d[idx(4)] = descale(tmp10 - tmp11, s);
-            }
-            let z1 = (tmp12 + tmp13) * 4433;
-            d[idx(2)] = descale(z1 + tmp13 * 6270, n);
-            d[idx(6)] = descale(z1 + tmp12 * -15137, n);
-            let z1 = tmp4 + tmp7;
-            let z2 = tmp5 + tmp6;
-            let z3 = tmp4 + tmp6;
-            let z4 = tmp5 + tmp7;
-            let z5 = (z3 + z4) * 9633;
-            let tmp4 = tmp4 * 2446;
-            let tmp5 = tmp5 * 16819;
-            let tmp6 = tmp6 * 25172;
-            let tmp7 = tmp7 * 12299;
-            let z1 = z1 * -7373;
-            let z2 = z2 * -20995;
-            let z3 = z3 * -16069 + z5;
-            let z4 = z4 * -3196 + z5;
-            d[idx(7)] = descale(tmp4 + z1 + z3, n);
-            d[idx(5)] = descale(tmp5 + z2 + z4, n);
-            d[idx(3)] = descale(tmp6 + z2 + z3, n);
-            d[idx(1)] = descale(tmp7 + z1 + z4, n);
-        }
+    type L = [i32; 8];
+    #[inline(always)]
+    fn f(a: L, b: L, op: fn(i32, i32) -> i32) -> L {
+        std::array::from_fn(|i| op(a[i], b[i]))
+    }
+    #[inline(always)]
+    fn add(a: L, b: L) -> L {
+        f(a, b, |x, y| x + y)
+    }
+    #[inline(always)]
+    fn sub(a: L, b: L) -> L {
+        f(a, b, |x, y| x - y)
+    }
+    #[inline(always)]
+    fn mul(a: L, k: i32) -> L {
+        std::array::from_fn(|i| a[i] * k)
+    }
+    #[inline(always)]
+    fn ds(a: L, n: i32) -> L {
+        std::array::from_fn(|i| (a[i] + (1 << (n - 1))) >> n)
+    }
+    /// One 1-D pass: `p[k]` is input sample k for every lane.
+    #[inline(always)]
+    fn pass(p: [L; 8], first: bool) -> [L; 8] {
+        let tmp0 = add(p[0], p[7]);
+        let tmp7 = sub(p[0], p[7]);
+        let tmp1 = add(p[1], p[6]);
+        let tmp6 = sub(p[1], p[6]);
+        let tmp2 = add(p[2], p[5]);
+        let tmp5 = sub(p[2], p[5]);
+        let tmp3 = add(p[3], p[4]);
+        let tmp4 = sub(p[3], p[4]);
+        let tmp10 = add(tmp0, tmp3);
+        let tmp13 = sub(tmp0, tmp3);
+        let tmp11 = add(tmp1, tmp2);
+        let tmp12 = sub(tmp1, tmp2);
+        let n = if first { CONST_BITS - PASS1_BITS } else { CONST_BITS + PASS1_BITS };
+        let (o0, o4) = if first {
+            (std::array::from_fn(|i| (tmp10[i] + tmp11[i]) << PASS1_BITS), std::array::from_fn(|i| (tmp10[i] - tmp11[i]) << PASS1_BITS))
+        } else {
+            (ds(add(tmp10, tmp11), PASS1_BITS), ds(sub(tmp10, tmp11), PASS1_BITS))
+        };
+        let z1 = mul(add(tmp12, tmp13), 4433);
+        let o2 = ds(add(z1, mul(tmp13, 6270)), n);
+        let o6 = ds(add(z1, mul(tmp12, -15137)), n);
+        let z1 = add(tmp4, tmp7);
+        let z2 = add(tmp5, tmp6);
+        let z3 = add(tmp4, tmp6);
+        let z4 = add(tmp5, tmp7);
+        let z5 = mul(add(z3, z4), 9633);
+        let tmp4 = mul(tmp4, 2446);
+        let tmp5 = mul(tmp5, 16819);
+        let tmp6 = mul(tmp6, 25172);
+        let tmp7 = mul(tmp7, 12299);
+        let z1 = mul(z1, -7373);
+        let z2 = mul(z2, -20995);
+        let z3 = add(mul(z3, -16069), z5);
+        let z4 = add(mul(z4, -3196), z5);
+        let o7 = ds(add(add(tmp4, z1), z3), n);
+        let o5 = ds(add(add(tmp5, z2), z4), n);
+        let o3 = ds(add(add(tmp6, z2), z3), n);
+        let o1 = ds(add(add(tmp7, z1), z4), n);
+        [o0, o1, o2, o3, o4, o5, o6, o7]
+    }
+    // Pass 1 (rows): lane = row, input k = column k.
+    let cols: [L; 8] = std::array::from_fn(|k| std::array::from_fn(|r| d[r * 8 + k]));
+    let h = pass(cols, true);
+    // Pass 2 (columns): lane = horizontal frequency, input r = row r.
+    let rows: [L; 8] = std::array::from_fn(|r| std::array::from_fn(|u| h[u][r]));
+    let v = pass(rows, false);
+    for (vf, lane) in v.iter().enumerate() {
+        d[vf * 8..vf * 8 + 8].copy_from_slice(lane);
     }
 }
 
@@ -183,26 +206,46 @@ struct BitWriter {
 }
 
 impl BitWriter {
+    /// Append `n <= 32` bits (MSB first) with 0xFF byte stuffing.
     #[inline(always)]
     fn put(&mut self, bits: u32, n: u32) {
         if n == 0 {
             return;
         }
-        self.buf = (self.buf << n) | u64::from(bits & ((1u32 << n) - 1));
+        // Callers pass `bits` already confined to `n` bits.
+        self.buf = (self.buf << n) | u64::from(bits);
         self.n += n;
+        if self.n >= 32 {
+            let word = (self.buf >> (self.n - 32)) as u32;
+            self.n -= 32;
+            let x = !word;
+            if x.wrapping_sub(0x0101_0101) & !x & 0x8080_8080 == 0 {
+                self.out.extend_from_slice(&word.to_be_bytes());
+            } else {
+                for b in word.to_be_bytes() {
+                    self.out.push(b);
+                    if b == 0xFF {
+                        self.out.push(0);
+                    }
+                }
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        // Pad with 1-bits to a byte boundary, then drain whole bytes.
+        let pad = (8 - self.n % 8) % 8;
+        if pad > 0 {
+            self.buf = (self.buf << pad) | ((1u64 << pad) - 1);
+            self.n += pad;
+        }
         while self.n >= 8 {
             let b = (self.buf >> (self.n - 8)) as u8;
+            self.n -= 8;
             self.out.push(b);
             if b == 0xFF {
                 self.out.push(0);
             }
-            self.n -= 8;
-        }
-    }
-    fn flush(&mut self) {
-        if self.n > 0 {
-            let pad = 8 - self.n;
-            self.put((1 << pad) - 1, pad);
         }
     }
 }
@@ -308,21 +351,21 @@ impl Encoder {
         let mut planes = vec![vec![0u8; pw * mcu_h]; ncomp];
         let cw = pw / hs;
         let mut chroma = vec![vec![0u8; cw * 8]; if gray { 0 } else { 2 }];
-        let t = rgb_tables();
         for my in 0..mcus_y {
             for ry in 0..mcu_h {
                 let sy = (my * mcu_h + ry).min(h - 1);
                 let src = &img.data[sy * w * ncomp..(sy + 1) * w * ncomp];
-                for x in 0..pw {
-                    let sx = x.min(w - 1);
-                    if gray {
-                        planes[0][ry * pw + x] = src[sx];
-                    } else {
-                        let (r, g, b) = (src[3 * sx] as usize, src[3 * sx + 1] as usize, src[3 * sx + 2] as usize);
-                        planes[0][ry * pw + x] = ((t[r] + t[g + 256] + t[b + 512]) >> 16) as u8;
-                        planes[1][ry * pw + x] = ((t[r + 768] + t[g + 1024] + t[b + 1280]) >> 16) as u8;
-                        planes[2][ry * pw + x] = ((t[r + 1280] + t[g + 1536] + t[b + 1792]) >> 16) as u8;
-                    }
+                let row = ry * pw;
+                if gray {
+                    planes[0][row..row + w].copy_from_slice(src);
+                } else {
+                    let (p0, rest) = planes.split_at_mut(1);
+                    let (p1, p2) = rest.split_at_mut(1);
+                    rgb_to_ycc(src, &mut p0[0][row..row + w], &mut p1[0][row..row + w], &mut p2[0][row..row + w]);
+                }
+                for p in planes.iter_mut() {
+                    let edge = p[row + w - 1];
+                    p[row + w..row + pw].fill(edge);
                 }
             }
             if !gray {
@@ -381,27 +424,17 @@ impl Encoder {
     }
 }
 
-/// jccolor.c `rgb_ycc_tab`, laid out as 8 consecutive 256-entry tables.
-fn rgb_tables() -> &'static [i32; 2048] {
-    static T: std::sync::OnceLock<[i32; 2048]> = std::sync::OnceLock::new();
-    T.get_or_init(|| {
-        let fix = |x: f64| (x * 65536.0 + 0.5) as i32;
-        let one_half = 1 << 15;
-        let cbcr_offset = 128 << 16;
-        let mut t = [0i32; 2048];
-        for i in 0..256 {
-            let v = i as i32;
-            t[i] = fix(0.29900) * v;
-            t[256 + i] = fix(0.58700) * v;
-            t[512 + i] = fix(0.11400) * v + one_half;
-            t[768 + i] = -fix(0.16874) * v;
-            t[1024 + i] = -fix(0.33126) * v;
-            t[1280 + i] = fix(0.5) * v + cbcr_offset + one_half - 1;
-            t[1536 + i] = -fix(0.41869) * v;
-            t[1792 + i] = -fix(0.08131) * v;
-        }
-        t
-    })
+/// jccolor.c `rgb_ycc_convert` with its table entries expanded into the
+/// same integer products (FIX() constants), so it vectorizes.
+fn rgb_to_ycc(src: &[u8], y: &mut [u8], cb: &mut [u8], cr: &mut [u8]) {
+    const HALF: i32 = 1 << 15;
+    const OFF: i32 = (128 << 16) + HALF - 1;
+    for (i, px) in src.chunks_exact(3).enumerate() {
+        let (r, g, b) = (i32::from(px[0]), i32::from(px[1]), i32::from(px[2]));
+        y[i] = ((19595 * r + 38470 * g + 7471 * b + HALF) >> 16) as u8;
+        cb[i] = ((-11059 * r - 21709 * g + 32768 * b + OFF) >> 16) as u8;
+        cr[i] = ((32768 * r - 27439 * g - 5329 * b + OFF) >> 16) as u8;
+    }
 }
 
 fn encode_block(bw: &mut BitWriter, c: &mut Comp, plane: &[u8], stride: usize, x0: usize, y0: usize) -> i32 {
@@ -412,17 +445,15 @@ fn encode_block(bw: &mut BitWriter, c: &mut Comp, plane: &[u8], stride: usize, x
         }
     }
     fdct_islow(&mut d);
+    // Branch-free reciprocal quantization (vectorizes; divisors are >= 8).
     let mut q = [0i32; 64];
     for i in 0..64 {
         let r = c.recips[i];
-        let temp = d[i];
-        let mag = temp.unsigned_abs();
-        let v = if r.recip == 1 && r.shift == 0 {
-            mag
-        } else {
-            ((mag + r.corr) * r.recip) >> (r.shift)
-        };
-        q[i] = if temp < 0 { -(v as i32) } else { v as i32 };
+        let d = d[i];
+        let sign = d >> 31;
+        let mag = ((d ^ sign) - sign) as u32;
+        let v = (((mag + r.corr) * r.recip) >> r.shift) as i32;
+        q[i] = (v ^ sign) - sign;
     }
     emit(bw, c, &q);
     q[0]
@@ -440,27 +471,33 @@ fn emit(bw: &mut BitWriter, c: &mut Comp, q: &[i32; 64]) {
     let diff = q[0] - c.pred;
     c.pred = q[0];
     let (nbits, bits) = magnitude(diff);
-    bw.put(u32::from(c.dc.code[nbits as usize]), u32::from(c.dc.size[nbits as usize]));
-    bw.put(bits, nbits);
-    // AC
-    let mut run = 0;
+    let size = u32::from(c.dc.size[nbits as usize]);
+    bw.put((u32::from(c.dc.code[nbits as usize]) << nbits) | bits, size + nbits);
+    // AC: zigzag order plus a bitmap of non-zero coefficients, so runs of
+    // zeros are skipped with one trailing-zeros count (as libjpeg-turbo).
+    let mut zz = [0i32; 64];
+    let mut mask = 0u64;
     for k in 1..64 {
         let v = q[ZIGZAG[k]];
-        if v == 0 {
-            run += 1;
-            continue;
-        }
+        zz[k] = v;
+        mask |= u64::from(v != 0) << k;
+    }
+    let mut last = 0u32;
+    while mask != 0 {
+        let k = mask.trailing_zeros();
+        mask &= mask - 1;
+        let mut run = k - last - 1;
+        last = k;
         while run > 15 {
             bw.put(u32::from(c.ac.code[0xF0]), u32::from(c.ac.size[0xF0]));
             run -= 16;
         }
-        let (nbits, bits) = magnitude(v);
-        let sym = (run << 4) | nbits as usize;
-        bw.put(u32::from(c.ac.code[sym]), u32::from(c.ac.size[sym]));
-        bw.put(bits, nbits);
-        run = 0;
+        let (nbits, bits) = magnitude(zz[k as usize]);
+        let sym = ((run << 4) | nbits) as usize;
+        let size = u32::from(c.ac.size[sym]);
+        bw.put((u32::from(c.ac.code[sym]) << nbits) | bits, size + nbits);
     }
-    if run > 0 {
+    if last < 63 {
         bw.put(u32::from(c.ac.code[0]), u32::from(c.ac.size[0]));
     }
 }

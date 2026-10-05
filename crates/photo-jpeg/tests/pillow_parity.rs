@@ -117,3 +117,38 @@ fn matches_pillow_bit_for_bit() {
     assert!(cases.len() > 50);
     assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), cases.len(), failures.join("\n"));
 }
+
+#[test]
+fn luma_matches_libjpeg_grayscale_output() {
+    let dir = std::env::temp_dir().join(format!("photo-jpeg-luma-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = r#"
+import sys
+from PIL import Image
+d=sys.argv[1]
+im=Image.new("RGB",(77,45))
+px=im.load()
+for y in range(45):
+    for x in range(77):
+        px[x,y]=((x*9)%256,(y*13)%256,((x+y)*7)%256)
+for sub,prog in [(0,False),(2,False),(2,True),(1,True)]:
+    n=f"l{sub}{int(prog)}"
+    im.save(f"{d}/{n}.jpg",quality=85,subsampling=sub,progressive=prog)
+    g=Image.open(f"{d}/{n}.jpg"); g.draft("L",g.size); g=g.convert("L") if g.mode!="L" else g
+    open(f"{d}/{n}.raw","wb").write(g.tobytes())
+    print(n)
+"#;
+    let Ok(out) = Command::new("python3").args(["-c", script]).arg(&dir).output() else { return };
+    if !out.status.success() {
+        eprintln!("Pillow unavailable; skipping");
+        return;
+    }
+    for n in String::from_utf8(out.stdout).unwrap().lines() {
+        let jpg = std::fs::read(dir.join(format!("{n}.jpg"))).unwrap();
+        let want = std::fs::read(dir.join(format!("{n}.raw"))).unwrap();
+        let (_, img) = photo_jpeg::decode_luma(&jpg, &Limits::default(), &Deadline::NONE).unwrap();
+        assert_eq!(img.format, PixelFormat::Gray8);
+        assert_eq!(img.data, want, "{n}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -107,3 +107,29 @@ fn corrupt_and_truncated_streams_fail_cleanly() {
     assert!(!r.complete);
     assert_eq!(&out[..], &data[..10]);
 }
+
+#[test]
+fn block_header_with_all_nineteen_code_length_codes() {
+    // Regression: a dynamic block using all 19 code-length codes needs 57
+    // header bits. Synthetic photo rows produce such blocks.
+    let (w, h) = (3000u32, 500u32);
+    let mut data = Vec::new();
+    let mut x32 = 0x9E37_79B9u32;
+    for y in 0..h {
+        for x in 0..w {
+            x32 ^= x32 << 13;
+            x32 ^= x32 >> 17;
+            x32 ^= x32 << 5;
+            let n = (x32 & 15) as i32 - 8;
+            data.extend_from_slice(&[
+                ((x * 255 / w) as i32 + n).clamp(0, 255) as u8,
+                ((y * 255 / h) as i32 + n).clamp(0, 255) as u8,
+                ((((x / 37) ^ (y / 53)) & 0x3F) as i32 * 3 + 60 + n).clamp(0, 255) as u8,
+            ]);
+        }
+    }
+    let z = compress_zlib(&data, Level::DEFAULT);
+    let mut out = Vec::new();
+    assert!(inflate_zlib(&z, &mut out, data.len(), false).unwrap().complete);
+    assert_eq!(out, data);
+}
