@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! CRC-32 and Adler-32 (zlib-rs kernels: PCLMUL/AVX-512/NEON when present).
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -8,7 +9,7 @@ impl Crc32 {
         Crc32(0)
     }
     pub fn update(&mut self, data: &[u8]) {
-        self.0 = zlib_rs::crc32::crc32(self.0, data);
+        self.0 = crate::engine::crc32::crc32(self.0, data);
     }
     pub fn finish(&self) -> u32 {
         self.0
@@ -16,7 +17,7 @@ impl Crc32 {
 }
 
 pub fn crc32(data: &[u8]) -> u32 {
-    zlib_rs::crc32::crc32(0, data)
+    crate::engine::crc32::crc32(0, data)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,7 +34,7 @@ impl Adler32 {
         Adler32(1)
     }
     pub fn update(&mut self, data: &[u8]) {
-        self.0 = zlib_rs::adler32::adler32(self.0, data);
+        self.0 = crate::engine::adler32::adler32(self.0, data);
     }
     pub fn finish(&self) -> u32 {
         self.0
@@ -41,7 +42,7 @@ impl Adler32 {
 }
 
 pub fn adler32(data: &[u8]) -> u32 {
-    zlib_rs::adler32::adler32(1, data)
+    crate::engine::adler32::adler32(1, data)
 }
 
 #[cfg(test)]

@@ -1,14 +1,38 @@
 [package]
 name = "photo-deflate"
-description = "zlib/DEFLATE for audeniq-photo: safe, bounded API over the vendored zlib-rs"
+description = "zlib/DEFLATE for audeniq-photo (engine merged from zlib-rs, bounded safe API)"
 version.workspace = true
-edition.workspace = true
+# The merged engine is edition-2021 code.
+edition = "2021"
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
 photo-core.workspace = true
-zlib-rs = { package = "photo-zlib", path = "../photo-zlib" }
 
-[lints]
-workspace = true
+[dev-dependencies]
+crc32fast = "1.3.2"
+memoffset = "0.9.1"
+quickcheck = { version = "1.0.3", default-features = false }
+
+[features]
+# Feature names the merged engine source tests for. `std` (runtime CPU
+# detection + Rust allocator) is always on; the rest are opt-in.
+default = ["std"]
+std = ["rust-allocator"]
+rust-allocator = []
+c-allocator = []
+__internal-api = []
+__internal-test = []
+__internal-fuzz = []
+__internal-fuzz-disable-checksum = []
+ZLIB_DEBUG = []
+vpclmulqdq = []
+avx512 = ["vpclmulqdq"]
+lsx = []
+
+# The engine needs `unsafe` (SIMD kernels, stream buffers); everything else
+# in the crate keeps it out with module-level `deny(unsafe_code)`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "allow" }

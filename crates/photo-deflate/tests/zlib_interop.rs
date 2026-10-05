@@ -1,6 +1,6 @@
 //! Cross-check against the reference zlib (via python3's `zlib` module) when
 //! it is available. Skips silently otherwise.
-use photo_deflate::{Level, compress_zlib, inflate_zlib};
+use photo_deflate::{compress_zlib, inflate_zlib, Level};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -214,14 +214,14 @@ fn randomized_roundtrips() {
         let r = inflate_zlib(&z, &mut out, data.len(), false)
             .unwrap_or_else(|e| panic!("case {case} len {len} level {}: {e}", level.get()));
         assert!(r.complete && out == data, "case {case}");
-        if case % 16 == 0
-            && let Some(back) = python(
+        if case % 16 == 0 {
+            if let Some(back) = python(
                 "import sys,zlib;sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))",
                 &z,
-            )
-        {
-            assert_eq!(back, data, "zlib disagrees on case {case}");
-            python_checked += 1;
+            ) {
+                assert_eq!(back, data, "zlib disagrees on case {case}");
+                python_checked += 1;
+            }
         }
     }
     eprintln!("randomized: 160 cases, {python_checked} cross-checked with zlib");

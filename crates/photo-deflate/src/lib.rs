@@ -1,17 +1,25 @@
 //! DEFLATE (RFC 1951) and zlib (RFC 1950) for audeniq-photo.
 //!
-//! The engine is zlib-rs (vendored as `photo-zlib`): a memory-safe port of
-//! zlib-ng with runtime-selected SIMD (AVX2/AVX-512/NEON) for matching,
-//! CRC-32 and Adler-32. This crate keeps the workspace's API and adds what
-//! the decoders need on top: hard output limits, a truncating mode for PNG
-//! rows, an exact mode for evidence-grade streams, and the shared error type.
-#![forbid(unsafe_code)]
+//! The engine (`engine/`) is zlib-rs — a memory-safe Rust port of zlib-ng
+//! with SIMD matching, CRC-32 and Adler-32 — merged into this crate (see
+//! `ENGINE.md`). The public API adds what the decoders need: hard output
+//! limits, a truncating mode for PNG rows, an exact mode for evidence-grade
+//! streams, per-thread state reuse and the shared error type.
+
+extern crate alloc;
 
 mod checksum;
+mod engine;
 mod stream;
 
-pub use checksum::{Adler32, Crc32, adler32, crc32};
+pub use checksum::{adler32, crc32, Adler32, Crc32};
 pub use photo_core::{Error, Result};
 pub use stream::{
-    Compressor, Inflated, Level, compress_zlib, inflate_raw, inflate_zlib, inflate_zlib_exact,
+    compress_zlib, inflate_raw, inflate_zlib, inflate_zlib_exact, Compressor, Inflated, Level,
 };
+
+/// Detect CPU features now (call at service start) so that no request
+/// pays for detection.
+pub fn warm_up() {
+    engine::cpu_features::warm_up();
+}

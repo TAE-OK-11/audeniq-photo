@@ -3,7 +3,7 @@
 Audeniq 백엔드가 외부 프로세스로 실행하던 이미지 도구(ffprobe, ExifTool, ZBar,
 Python/Pillow/LittleCMS 업로드 정화기)를 **Rust로 포팅해 하나의 라이브러리**로 합친 저장소입니다.
 원칙: **이미 Rust로 된 우수한 구현은 가져와 Audeniq에 맞게 개선**하고(zlib-rs), **Rust가 아닌 도구는 포팅**합니다.
-자체 크레이트는 모두 `#![forbid(unsafe_code)]`이고, `unsafe`는 벤더링한 zlib-rs(SIMD 커널)에만 있습니다.
+`unsafe`는 `photo-deflate`의 엔진 모듈(zlib-rs에서 합친 SIMD 커널·스트림 버퍼)에만 있고, 나머지 크레이트는 `#![forbid(unsafe_code)]`입니다.
 외부 C 라이브러리나 실행 파일에는 의존하지 않습니다(Poppler·Tesseract는 다음 단계 — [docs/PORTING.md](docs/PORTING.md)).
 
 ## 구성
@@ -11,8 +11,7 @@ Python/Pillow/LittleCMS 업로드 정화기)를 **Rust로 포팅해 하나의 �
 | 크레이트 | 역할 | 포팅 원본 |
 |---|---|---|
 | `photo-core` | 공통 오류·자원 한도·데드라인·픽셀 형식 | — |
-| `photo-zlib` | zlib-rs 벤더링(zlib-ng의 Rust 포트, 런타임 SIMD 선택) | [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) 0.6.8 |
-| `photo-deflate` | 출력 한도·절단/정확 모드를 더한 안전한 zlib API, CRC-32, Adler-32 | — |
+| `photo-deflate` | zlib/DEFLATE: zlib-rs 엔진을 합쳐 직접 호출(버퍼 직접 기록, 스레드별 상태 재사용, CPU 판별 1회), 출력 한도·절단/정확 모드 | [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) 0.6.8 (`ENGINE.md`) |
 | `photo-png` | PNG 디코더(전 색상형·비트 깊이·Adam7), 스트리밍 인코더, 전자서명 PNG 엄격 검증 | libpng 동작, `sanitize-upload.py` |
 | `photo-jpeg` | JPEG 디코더(베이스라인·프로그레시브), 베이스라인 인코더 | libjpeg-turbo (ISLOW IDCT, fancy 업샘플링, jdcolor, jcdctmgr) |
 | `photo-icc` | ICC 파서, sRGB 변환(매트릭스-셰이퍼·LUT·CMYK, BPC) | LittleCMS 2 |

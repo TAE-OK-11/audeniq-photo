@@ -10,8 +10,9 @@
 //!
 //! Every entry point runs in-process on bytes already in memory, inside a
 //! panic guard, with explicit pixel/allocation limits and a deadline.
-//! All audeniq-photo crates are `#![forbid(unsafe_code)]`; the only `unsafe`
-//! is inside the vendored zlib-rs (`photo-zlib`) SIMD and stream code.
+//! All audeniq-photo crates are `#![forbid(unsafe_code)]` except the DEFLATE
+//! engine module of `photo-deflate` (merged from zlib-rs: SIMD kernels and
+//! stream buffers).
 #![forbid(unsafe_code)]
 
 mod cover;

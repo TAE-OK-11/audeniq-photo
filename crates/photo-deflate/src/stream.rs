@@ -1,7 +1,12 @@
-//! Bounded inflate and streaming deflate over zlib-rs.
+//! Bounded inflate and streaming deflate, calling the engine directly.
 
+use crate::engine::{
+    deflate::{self, DeflateConfig, DeflateStream},
+    inflate::{self, InflateConfig, InflateStream},
+    DeflateFlush, InflateFlush, ReturnCode,
+};
 use photo_core::{Error, Result};
-use zlib_rs::{Deflate, DeflateFlush, Inflate, InflateError, InflateFlush, Status};
+use std::cell::RefCell;
 
 /// Compression level, 0 (stored) to 9 (best). Same scale as zlib.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,10 +31,86 @@ impl Default for Level {
     }
 }
 
-fn inflate_error(e: InflateError) -> Error {
-    match e {
-        InflateError::NeedDict { .. } => Error::Unsupported("zlib preset dictionary"),
-        InflateError::MemError => Error::Limit("inflate memory"),
+/// Owned inflate state (freed through the engine on drop).
+struct InflateState(InflateStream<'static>);
+
+impl Drop for InflateState {
+    fn drop(&mut self) {
+        let _ = inflate::end(&mut self.0);
+    }
+}
+
+fn inflate_config(zlib: bool) -> InflateConfig {
+    InflateConfig {
+        window_bits: if zlib { 15 } else { -15 },
+    }
+}
+
+impl InflateState {
+    fn new(zlib: bool) -> Self {
+        InflateState(InflateStream::new(inflate_config(zlib)))
+    }
+
+    /// Run the engine once. Output goes straight into `out`'s spare
+    /// capacity, at most `room` bytes. Returns (code, consumed, produced).
+    fn step(&mut self, input: &[u8], out: &mut Vec<u8>, room: usize) -> (ReturnCode, usize, usize) {
+        out.reserve(room);
+        let spare = out.spare_capacity_mut();
+        let room = room.min(spare.len()).min(u32::MAX as usize);
+        let avail_in = input.len().min(u32::MAX as usize);
+        let s = &mut self.0;
+        s.next_in = input.as_ptr().cast_mut();
+        s.avail_in = avail_in as u32;
+        s.next_out = spare.as_mut_ptr().cast();
+        s.avail_out = room as u32;
+        // SAFETY: the state was initialized by `InflateStream::new`/reset;
+        // next_in/avail_in describe a live shared slice and next_out/
+        // avail_out the uninitialized tail of `out`, which the engine only
+        // writes; both pointers are cleared before returning.
+        #[allow(unsafe_code)]
+        let code = unsafe { inflate::inflate(s, InflateFlush::NoFlush) };
+        let consumed = avail_in - s.avail_in as usize;
+        let produced = room - s.avail_out as usize;
+        s.next_in = core::ptr::null_mut();
+        s.next_out = core::ptr::null_mut();
+        s.avail_in = 0;
+        s.avail_out = 0;
+        // SAFETY: the engine initialized exactly `produced` bytes at the
+        // start of the spare capacity.
+        #[allow(unsafe_code)]
+        unsafe {
+            out.set_len(out.len() + produced);
+        }
+        (code, consumed, produced)
+    }
+}
+
+thread_local! {
+    /// One reusable inflate state per thread and header mode: PNG text,
+    /// iCCP and signature streams no longer allocate a window each.
+    static INFLATE_POOL: RefCell<[Option<InflateState>; 2]> = const { RefCell::new([None, None]) };
+    static DEFLATE_POOL: RefCell<[Option<DeflateState>; 2]> = const { RefCell::new([None, None]) };
+}
+
+fn take_inflate(zlib: bool) -> InflateState {
+    let pooled = INFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)].take());
+    match pooled {
+        Some(mut s) => {
+            let _ = inflate::reset_with_config(&mut s.0, inflate_config(zlib));
+            s
+        }
+        None => InflateState::new(zlib),
+    }
+}
+
+fn give_inflate(zlib: bool, s: InflateState) {
+    INFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)] = Some(s));
+}
+
+fn engine_error(code: ReturnCode) -> Error {
+    match code {
+        ReturnCode::NeedDict => Error::Unsupported("zlib preset dictionary"),
+        ReturnCode::MemError => Error::Limit("inflate memory"),
         _ => Error::Invalid("corrupt deflate stream"),
     }
 }
@@ -44,7 +125,6 @@ pub struct Inflated {
     pub complete: bool,
 }
 
-/// Decode into `out` without letting it grow beyond `limit` bytes.
 fn run(
     zlib: bool,
     input: &[u8],
@@ -52,54 +132,70 @@ fn run(
     limit: usize,
     truncate: bool,
 ) -> Result<Inflated> {
-    let mut st = Inflate::new(zlib, 15);
+    let mut st = take_inflate(zlib);
+    let r = run_with(&mut st, input, out, limit, truncate);
+    // Only a stream that finished cleanly goes back to the pool; a failed
+    // one is dropped (its state may be mid-error).
+    if r.is_ok() {
+        give_inflate(zlib, st);
+    }
+    r
+}
+
+fn run_with(
+    st: &mut InflateState,
+    input: &[u8],
+    out: &mut Vec<u8>,
+    limit: usize,
+    truncate: bool,
+) -> Result<Inflated> {
+    let mut pos = 0;
     loop {
-        let consumed = st.total_in() as usize;
         if out.len() >= limit {
-            // Is there more output? Probe with a one-byte buffer.
-            let mut probe = [0u8; 1];
-            let r = st
-                .decompress(&input[consumed..], &mut probe, InflateFlush::NoFlush)
-                .map_err(inflate_error)?;
-            if st.total_out() as usize > out.len() {
+            // Is there more output? Probe with a one-byte budget.
+            let mut probe = Vec::with_capacity(1);
+            let (code, used, produced) = st.step(&input[pos..], &mut probe, 1);
+            pos += used;
+            if produced > 0 {
                 return if truncate {
                     Ok(Inflated {
-                        consumed: st.total_in() as usize,
+                        consumed: pos,
                         complete: false,
                     })
                 } else {
                     Err(Error::Limit("decompressed size"))
                 };
             }
-            if r == Status::StreamEnd {
+            match code {
+                ReturnCode::StreamEnd => {
+                    return Ok(Inflated {
+                        consumed: pos,
+                        complete: true,
+                    })
+                }
+                ReturnCode::Ok | ReturnCode::BufError if used > 0 => continue,
+                ReturnCode::Ok | ReturnCode::BufError => return Err(Error::Truncated),
+                other => return Err(engine_error(other)),
+            }
+        }
+        // Grow geometrically: one call fills a pre-sized output (PNG rows)
+        // and unknown sizes do not over-reserve.
+        let room = (limit - out.len()).min(out.len().max(64 * 1024));
+        let (code, used, produced) = st.step(&input[pos..], out, room);
+        pos += used;
+        match code {
+            ReturnCode::StreamEnd => {
                 return Ok(Inflated {
-                    consumed: st.total_in() as usize,
+                    consumed: pos,
                     complete: true,
-                });
+                })
             }
-            if st.total_in() as usize == consumed {
-                return Err(Error::Truncated);
+            ReturnCode::Ok | ReturnCode::BufError => {
+                if produced == 0 && used == 0 {
+                    return Err(Error::Truncated);
+                }
             }
-            continue;
-        }
-        let room = limit - out.len();
-        let chunk = room.min(out.len().max(64 * 1024));
-        let old = out.len();
-        out.resize(old + chunk, 0);
-        let before_out = st.total_out();
-        let r = st.decompress(&input[consumed..], &mut out[old..], InflateFlush::NoFlush);
-        let produced = (st.total_out() - before_out) as usize;
-        out.truncate(old + produced);
-        let r = r.map_err(inflate_error)?;
-        if r == Status::StreamEnd {
-            return Ok(Inflated {
-                consumed: st.total_in() as usize,
-                complete: true,
-            });
-        }
-        if produced == 0 && st.total_in() as usize == consumed {
-            // No progress with output space available: the input ended.
-            return Err(Error::Truncated);
+            other => return Err(engine_error(other)),
         }
     }
 }
@@ -135,46 +231,89 @@ pub fn inflate_zlib_exact(input: &[u8], expected: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Streaming compressor producing a raw DEFLATE or a zlib stream.
-pub struct Compressor {
-    d: Deflate,
-    scratch: Vec<u8>,
+/// Owned deflate state (freed through the engine on drop).
+struct DeflateState(DeflateStream<'static>);
+
+impl Drop for DeflateState {
+    fn drop(&mut self) {
+        let _ = deflate::end(&mut self.0);
+    }
 }
 
-const SCRATCH: usize = 64 * 1024;
+fn take_deflate(level: Level, zlib: bool) -> DeflateState {
+    let pooled = DEFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)].take());
+    let level = i32::from(level.0);
+    match pooled {
+        Some(mut s) => {
+            let _ = deflate::reset(&mut s.0);
+            let _ = deflate::params(&mut s.0, level, Default::default());
+            s
+        }
+        None => DeflateState(DeflateStream::new(DeflateConfig {
+            window_bits: if zlib { 15 } else { -15 },
+            level,
+            ..DeflateConfig::default()
+        })),
+    }
+}
+
+/// Streaming compressor producing a raw DEFLATE or a zlib stream.
+pub struct Compressor {
+    st: Option<DeflateState>,
+    zlib: bool,
+}
+
+const STEP: usize = 64 * 1024;
 
 impl Compressor {
     /// Raw DEFLATE (no header, no checksum).
     pub fn raw(level: Level) -> Self {
-        Self::new(level, false)
+        Compressor {
+            st: Some(take_deflate(level, false)),
+            zlib: false,
+        }
     }
 
     /// zlib-wrapped stream (RFC 1950).
     pub fn zlib(level: Level) -> Self {
-        Self::new(level, true)
-    }
-
-    fn new(level: Level, zlib: bool) -> Self {
         Compressor {
-            d: Deflate::new(i32::from(level.0), zlib, 15),
-            scratch: vec![0; SCRATCH],
+            st: Some(take_deflate(level, true)),
+            zlib: true,
         }
     }
 
     fn pump(&mut self, mut input: &[u8], flush: DeflateFlush, out: &mut Vec<u8>) {
+        let s = &mut self.st.as_mut().expect("compressor is live").0;
         loop {
-            let (in0, out0) = (self.d.total_in(), self.d.total_out());
-            let r = self
-                .d
-                .compress(input, &mut self.scratch, flush)
-                .expect("deflate stream state is valid");
-            let used = (self.d.total_in() - in0) as usize;
-            let produced = (self.d.total_out() - out0) as usize;
-            out.extend_from_slice(&self.scratch[..produced]);
+            out.reserve(STEP);
+            let spare = out.spare_capacity_mut();
+            let room = spare.len().min(u32::MAX as usize);
+            let avail_in = input.len().min(u32::MAX as usize);
+            s.next_in = input.as_ptr().cast_mut();
+            s.avail_in = avail_in as u32;
+            s.next_out = spare.as_mut_ptr().cast();
+            s.avail_out = room as u32;
+            let code = deflate::deflate(s, flush);
+            let used = avail_in - s.avail_in as usize;
+            let produced = room - s.avail_out as usize;
+            s.next_in = core::ptr::null_mut();
+            s.next_out = core::ptr::null_mut();
+            s.avail_in = 0;
+            s.avail_out = 0;
+            // SAFETY: the engine initialized exactly `produced` bytes at the
+            // start of the spare capacity (next_out/avail_out above).
+            #[allow(unsafe_code)]
+            unsafe {
+                out.set_len(out.len() + produced);
+            }
             input = &input[used..];
+            assert!(
+                !matches!(code, ReturnCode::StreamError | ReturnCode::DataError),
+                "deflate state invalid"
+            );
             let done = match flush {
-                DeflateFlush::Finish => r == Status::StreamEnd,
-                _ => input.is_empty() && produced < SCRATCH,
+                DeflateFlush::Finish => code == ReturnCode::StreamEnd,
+                _ => input.is_empty() && produced < room,
             };
             if done {
                 return;
@@ -192,6 +331,9 @@ impl Compressor {
     /// Finish the stream (final block and zlib trailer).
     pub fn finish(mut self, out: &mut Vec<u8>) {
         self.pump(&[], DeflateFlush::Finish, out);
+        let st = self.st.take().expect("compressor is live");
+        let zlib = self.zlib;
+        DEFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)] = Some(st));
     }
 }
 
@@ -203,7 +345,6 @@ pub fn compress_zlib(data: &[u8], level: Level) -> Vec<u8> {
     c.finish(&mut out);
     out
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

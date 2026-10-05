@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "audeniq-photo"
 version = "0.1.0"
 dependencies = [
@@ -44,17 +35,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -126,8 +106,10 @@ version = "0.1.0"
 name = "photo-deflate"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "memoffset",
  "photo-core",
- "photo-zlib",
+ "quickcheck",
 ]
 
 [[package]]
@@ -170,16 +152,6 @@ version = "0.1.0"
 dependencies = [
  "photo-core",
  "photo-png",
-]
-
-[[package]]
-name = "photo-zlib"
-version = "0.6.8"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "memoffset",
- "quickcheck",
 ]
 
 [[package]]
@@ -257,7 +229,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn",
 ]
 
 [[package]]
@@ -271,17 +243,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "syn"
-version = "2.0.119"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
 ]
 
 [[package]]

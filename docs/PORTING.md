@@ -44,9 +44,10 @@
 ## 4. 원칙: Rust 구현은 가져와 개선, 나머지는 포팅
 
 - 성숙한 Rust 구현이 있는 영역은 벤더링해 Audeniq 요구에 맞게 조정합니다.
-  - **zlib**: 자체 deflate 대신 [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs)(zlib-ng 포트)를 `crates/photo-zlib`로
-    가져왔습니다. 소스는 업스트림과 동일하게 유지하고(동기화 절차는 `crates/photo-zlib/UPSTREAM.md`), 기본 기능을 순수 Rust 할당자로 바꿨으며,
-    `photo-deflate`가 출력 한도·PNG 절단 모드·증거용 정확 모드를 얹은 안전한 API를 제공합니다.
+  - **zlib**: 자체 deflate 대신 [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs)(zlib-ng 포트)의 엔진을 `photo-deflate`
+    내부 모듈로 합쳤습니다(`crates/photo-deflate/ENGINE.md`). 별도 크레이트·래퍼 없이 우리 API가 엔진을 직접 호출해 호출자 버퍼에 바로
+    쓰고(0 채우기·임시 버퍼 복사 제거), 스레드별로 스트림 상태를 재사용하며, CPU 기능은 프로세스당 한 번 판별합니다. C 할당자·콜백 API·
+    LoongArch/wasm 경로는 제거했고 알고리즘·SIMD 커널·업스트림 단위 테스트는 유지합니다.
     결과: 3000px PNG 정화 1.11 s → 0.73 s, inflate 159 → 110 ms, PNG 디코드 130 → 84 ms (런타임 AVX2/PCLMUL 선택이라 기본 빌드에서도 적용).
 - C/C++/Perl/Python 도구(libjpeg-turbo, LittleCMS, ExifTool, ZBar/quirc, Pillow 정화기, 다음으로 Poppler·Tesseract)는 Rust로 포팅합니다.
 
