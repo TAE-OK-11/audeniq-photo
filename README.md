@@ -49,6 +49,8 @@ target/release/audeniq-photo sanitize in.png out.png image/png
 target/release/audeniq-photo sanitize in.pdf out.pdf application/pdf   # Poppler 없이
 target/release/audeniq-photo pdf-info in.pdf
 target/release/audeniq-photo pdf-render in.pdf 1 page1.png
+target/release/audeniq-photo pdf-rasterize in.pdf pages.frames    # 샌드박스 안(신뢰 불가 단계)
+target/release/audeniq-photo pdf-assemble pages.frames out.pdf     # 밖(픽셀 검증 후 PDF 작성)
 target/release/audeniq-photo-bench --reference-sanitizer crates/audeniq-photo/tests/reference/sanitize-upload.py
 ```
 

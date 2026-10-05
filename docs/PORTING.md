@@ -39,8 +39,10 @@
 
 보안 모델 변화: 정화·메타데이터·QR 디코딩이 샌드박스 자식 프로세스 대신 워커 프로세스 안에서 실행됩니다.
 대신 모든 디코더가 메모리 안전한 Rust(`unsafe` 금지)이고, 픽셀 수·할당 크기·텍스트 크기 한도와
-데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. PDF는 렌더링 중 중단이 불가능하므로 `audeniq-photo sanitize`
-명령을 기존 Landlock/seccomp 샌드박스(시간·메모리 한도) 자식 프로세스로 실행합니다(Poppler 자리). Tesseract는 기존대로 샌드박스에서 실행됩니다.
+데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. PDF는 렌더링 중 중단이 불가능하므로 둘로 나눕니다:
+파싱·렌더링(`pdf::rasterize_frames`)은 기존 Landlock/seccomp 샌드박스(시간·메모리 한도) 자식 프로세스에서(Poppler 자리)
+원시 RGB 프레임만 내보내고, 부모가 프레임을 검증(쪽수·크기·픽셀 예산·정확한 길이)해 이미지 전용 PDF를 직접 씁니다
+(`pdf::image_only_pdf_from_frames`). 자식이 오염돼도 결과물에는 픽셀만 들어갑니다. Tesseract는 기존대로 샌드박스에서 실행됩니다.
 
 ## 4. 원칙: Rust 구현은 가져와 개선, 나머지는 포팅
 

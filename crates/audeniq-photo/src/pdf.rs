@@ -79,49 +79,140 @@ pub fn render_page(data: &[u8], index: usize) -> Result<Image> {
     })
 }
 
+/// Open, check (not encrypted, `1..=32` pages, pixel budget) and hand the
+/// page sizes plus a page renderer to `f`.
+fn with_pages<R>(
+    data: &[u8],
+    f: impl FnOnce(&[(u16, u16)], &mut dyn FnMut(usize) -> Result<Image>) -> Result<R>,
+) -> Result<R> {
+    let pdf = open(data)?;
+    let pages = pdf.pages();
+    if !(1..=MAX_PAGES as usize).contains(&pages.len()) || pdf.xref().is_encrypted() {
+        return Err(Error::Invalid("encrypted or oversized document"));
+    }
+    let sizes = pages
+        .iter()
+        .map(|p| {
+            let (w, h) = p.render_dimensions();
+            render_size(w, h).ok_or(Error::Invalid("page size"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // Refuse over-budget documents before rendering anything.
+    let total: u64 = sizes
+        .iter()
+        .map(|&(w, h)| u64::from(w) * u64::from(h))
+        .sum();
+    if total > MAX_TOTAL_PIXELS {
+        return Err(Error::Limit("document pixel budget exceeded"));
+    }
+    let settings = InterpreterSettings::default();
+    let cache = photo_pdf::RenderCache::new();
+    let mut render = |i: usize| {
+        let (w, h) = sizes[i];
+        let data = photo_pdf::render_rgb(&pages[i], &cache, &settings, w, h)
+            .ok_or(Error::Invalid("page could not be rendered"))?;
+        Ok(Image {
+            width: u32::from(w),
+            height: u32::from(h),
+            format: PixelFormat::Rgb8,
+            data,
+        })
+    };
+    f(&sizes, &mut render)
+}
+
 /// Rasterize every page of an untrusted PDF and rebuild it as an
 /// image-only PDF (the former `pdfinfo` → `pdftoppm` → [`image_only_pdf`]
 /// pipeline in one pass, without the intermediate JPEG generation).
 ///
-/// Refuses encrypted documents and page counts outside `1..=32`, like the
-/// Poppler pipeline. Rendering is not interruptible inside a page; callers
-/// processing hostile input should still run this in a time- and
-/// memory-limited child process (the `audeniq-photo pdf-sanitize` command).
+/// Refuses encrypted documents, page counts outside `1..=32` and documents
+/// over the 64 MP budget, like the Poppler pipeline. Rendering is not
+/// interruptible inside a page; services handling hostile input should
+/// split the work: [`rasterize_frames`] in a time- and memory-limited child
+/// process, [`image_only_pdf_from_frames`] in the parent.
 pub fn sanitize_pdf(data: &[u8], deadline: &Deadline) -> Result<Vec<u8>> {
     guard(|| {
-        let pdf = open(data)?;
-        let pages = pdf.pages();
-        if !(1..=MAX_PAGES as usize).contains(&pages.len()) || pdf.xref().is_encrypted() {
+        with_pages(data, |sizes, render| {
+            write_image_pdf(sizes.len(), deadline, render)
+        })
+    })
+}
+
+/// Magic of the raster frame stream between [`rasterize_frames`] and
+/// [`image_only_pdf_from_frames`].
+pub const FRAMES_MAGIC: &[u8; 8] = b"APDFRGB1";
+
+/// Untrusted half of [`sanitize_pdf`]: parse and rasterize, writing raw
+/// pages to `out` as `FRAMES_MAGIC`, `u32` page count, then per page `u32`
+/// width, `u32` height (little endian) and `width * height` RGB8 pixels.
+/// Only pixels leave this step, so whatever the parser does, the parent
+/// writes the final document itself. Returns the page count.
+pub fn rasterize_frames(
+    data: &[u8],
+    deadline: &Deadline,
+    out: &mut dyn std::io::Write,
+) -> Result<u32> {
+    guard(|| {
+        with_pages(data, |sizes, render| {
+            let io = |_| Error::Limit("raster output failed");
+            out.write_all(FRAMES_MAGIC).map_err(io)?;
+            out.write_all(&(sizes.len() as u32).to_le_bytes())
+                .map_err(io)?;
+            for i in 0..sizes.len() {
+                deadline.check()?;
+                let image = render(i)?;
+                out.write_all(&image.width.to_le_bytes()).map_err(io)?;
+                out.write_all(&image.height.to_le_bytes()).map_err(io)?;
+                out.write_all(&image.data).map_err(io)?;
+            }
+            out.flush().map_err(io)?;
+            Ok(sizes.len() as u32)
+        })
+    })
+}
+
+/// Trusted half of [`sanitize_pdf`]: validate a frame stream from
+/// [`rasterize_frames`] (page count, page sizes, pixel budget, exact length)
+/// and write the image-only PDF. Reads one page at a time.
+pub fn image_only_pdf_from_frames(
+    input: &mut dyn std::io::Read,
+    deadline: &Deadline,
+) -> Result<Vec<u8>> {
+    guard(|| {
+        let bad = |_| Error::Invalid("malformed raster stream");
+        let mut header = [0u8; 12];
+        input.read_exact(&mut header).map_err(bad)?;
+        if &header[..8] != FRAMES_MAGIC {
+            return Err(Error::Invalid("malformed raster stream"));
+        }
+        let count = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
+        if !(1..=MAX_PAGES).contains(&count) {
             return Err(Error::Invalid("encrypted or oversized document"));
         }
-        let settings = InterpreterSettings::default();
-        let cache = photo_pdf::RenderCache::new();
-        let sizes = pages
-            .iter()
-            .map(|p| {
-                let (w, h) = p.render_dimensions();
-                render_size(w, h).ok_or(Error::Invalid("page size"))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Refuse over-budget documents before rendering anything.
-        let total: u64 = sizes
-            .iter()
-            .map(|&(w, h)| u64::from(w) * u64::from(h))
-            .sum();
-        if total > MAX_TOTAL_PIXELS {
-            return Err(Error::Limit("document pixel budget exceeded"));
-        }
-        write_image_pdf(sizes.len(), deadline, |i| {
-            let (w, h) = sizes[i];
-            let data = photo_pdf::render_rgb(&pages[i], &cache, &settings, w, h)
-                .ok_or(Error::Invalid("page could not be rendered"))?;
+        let side = u32::from(RENDER_SIDE);
+        let pdf = write_image_pdf(count as usize, deadline, |_| {
+            let mut dims = [0u8; 8];
+            input.read_exact(&mut dims).map_err(bad)?;
+            let w = u32::from_le_bytes(dims[..4].try_into().expect("4 bytes"));
+            let h = u32::from_le_bytes(dims[4..].try_into().expect("4 bytes"));
+            if !(1..=side).contains(&w) || !(1..=side).contains(&h) {
+                return Err(Error::Invalid("malformed raster stream"));
+            }
+            let mut data = vec![0u8; w as usize * h as usize * 3];
+            input.read_exact(&mut data).map_err(bad)?;
             Ok(Image {
-                width: u32::from(w),
-                height: u32::from(h),
+                width: w,
+                height: h,
                 format: PixelFormat::Rgb8,
                 data,
             })
-        })
+        })?;
+        // Nothing may follow the last page.
+        let mut probe = [0u8; 1];
+        match input.read(&mut probe) {
+            Ok(0) => Ok(pdf),
+            _ => Err(Error::Invalid("malformed raster stream")),
+        }
     })
 }
 

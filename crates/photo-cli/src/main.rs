@@ -11,6 +11,8 @@
 //!                                            no Poppler)
 //! audeniq-photo pdf-info <file>              page count and encryption (pdfinfo)
 //! audeniq-photo pdf-render <file> <page> <dst.png>  one page as sanitize renders it (pdftoppm)
+//! audeniq-photo pdf-rasterize <src.pdf> <dst.frames>  untrusted half of PDF sanitize (sandbox it)
+//! audeniq-photo pdf-assemble <src.frames> <dst.pdf>   trusted half: validate pixels, write the PDF
 //! audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]
 //! ```
 #![forbid(unsafe_code)]
@@ -22,7 +24,7 @@ use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: audeniq-photo <probe|meta|color|provenance|qr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo pdf-info <file>\n       audeniq-photo pdf-render <file> <page> <dst.png>\n       audeniq-photo --version"
+        "usage: audeniq-photo <probe|meta|color|provenance|qr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo pdf-info <file>\n       audeniq-photo pdf-render <file> <page> <dst.png>\n       audeniq-photo pdf-rasterize <src.pdf> <dst.frames>\n       audeniq-photo pdf-assemble <src.frames> <dst.pdf>\n       audeniq-photo --version"
     );
     ExitCode::from(2)
 }
@@ -136,6 +138,22 @@ fn run(args: &[String]) -> Result<(), String> {
         "pdf-info" => {
             let i = audeniq_photo::pdf::info(&read(file()?)?).map_err(|e| e.to_string())?;
             print(&json!({"pages": i.pages, "encrypted": i.encrypted}));
+        }
+        "pdf-rasterize" => {
+            let (src, dst) = (file()?, args.get(2).ok_or("missing destination")?);
+            let data = read(src)?;
+            let mut out =
+                std::io::BufWriter::new(std::fs::File::create(dst).map_err(|e| e.to_string())?);
+            audeniq_photo::pdf::rasterize_frames(&data, &deadline(), &mut out)
+                .map_err(|e| e.to_string())?;
+        }
+        "pdf-assemble" => {
+            let (src, dst) = (file()?, args.get(2).ok_or("missing destination")?);
+            let mut input =
+                std::io::BufReader::new(std::fs::File::open(src).map_err(|e| e.to_string())?);
+            let out = audeniq_photo::pdf::image_only_pdf_from_frames(&mut input, &deadline())
+                .map_err(|e| e.to_string())?;
+            std::fs::write(dst, out).map_err(|e| e.to_string())?;
         }
         "pdf-render" => {
             let (src, page, dst) = match &args[1..] {

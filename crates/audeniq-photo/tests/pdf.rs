@@ -264,3 +264,69 @@ fn native_render_matches_pdftoppm() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn split_frames_pipeline_matches_in_process_sanitize() {
+    let src = hostile_pdf();
+    let mut frames = Vec::new();
+    assert_eq!(
+        pdf::rasterize_frames(&src, &Deadline::NONE, &mut frames),
+        Ok(1)
+    );
+    assert_eq!(frames.len(), 12 + 8 + 2048 * 2048 * 3);
+    let out = pdf::image_only_pdf_from_frames(&mut frames.as_slice(), &Deadline::NONE).unwrap();
+    assert_eq!(out, pdf::sanitize_pdf(&src, &Deadline::NONE).unwrap());
+    let mut sink = Vec::new();
+    assert!(
+        pdf::rasterize_frames(
+            &fixture("encrypted_aes_128.pdf"),
+            &Deadline::NONE,
+            &mut sink
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn malformed_frame_streams_are_refused() {
+    let frame = |pages: &[(u32, u32)], count: u32| {
+        let mut v = pdf::FRAMES_MAGIC.to_vec();
+        v.extend_from_slice(&count.to_le_bytes());
+        for &(w, h) in pages {
+            v.extend_from_slice(&w.to_le_bytes());
+            v.extend_from_slice(&h.to_le_bytes());
+            v.extend(std::iter::repeat_n(200u8, (w * h * 3) as usize));
+        }
+        v
+    };
+    let ok = frame(&[(64, 32), (16, 16)], 2);
+    let out = pdf::image_only_pdf_from_frames(&mut ok.as_slice(), &Deadline::NONE).unwrap();
+    assert_eq!(pdf::info(&out).unwrap().pages, 2);
+    let mut cases: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", Vec::new()),
+        ("magic", {
+            let mut v = ok.clone();
+            v[0] ^= 1;
+            v
+        }),
+        ("zero pages", frame(&[], 0)),
+        ("33 pages", frame(&[(1, 1); 33], 33)),
+        ("count above frames", frame(&[(8, 8)], 2)),
+        ("zero width", frame(&[(0, 8)], 1)),
+        ("too wide", frame(&[(2049, 8)], 1)),
+        ("truncated", ok[..ok.len() - 1].to_vec()),
+        ("trailing", {
+            let mut v = ok.clone();
+            v.push(0);
+            v
+        }),
+    ];
+    // 16 full 2048x2048 pages exceed the 64 MP budget.
+    cases.push(("budget", frame(&[(2048, 2048); 16], 16)));
+    for (name, bytes) in cases {
+        assert!(
+            pdf::image_only_pdf_from_frames(&mut bytes.as_slice(), &Deadline::NONE).is_err(),
+            "{name}"
+        );
+    }
+}
