@@ -25,7 +25,7 @@
 | 3 | zbarimg | 커버당 0.1–0.6 s, 90 MB | **완료** |
 | 4 | ffprobe(이미지) | 헤더만 읽는데 프로세스 40–215 ms, 50–94 MB | **완료** |
 | 5 | ffprobe(오디오 태그 대체 경로) | 네이티브 리더가 TTA를 직접 읽으면 불필요 | **완료** |
-| 6 | Poppler | 문서 업로드만(드묾), PDF 파서+래스터라이저는 대규모 | 2차 (샌드박스 안에서 계속 실행) |
+| 6 | Poppler | 문서 업로드만(드묾), PDF 파서+래스터라이저는 대규모 | **2차 완료** (hayro를 가져와 합침) |
 | 7 | Tesseract | 커버마다 실행되지만 LSTM 엔진·eng/kor 모델 포팅은 별도 대형 과제 | 2~3차 |
 
 ## 3. 백엔드 전환 내용 (1차)
@@ -39,7 +39,8 @@
 
 보안 모델 변화: 정화·메타데이터·QR 디코딩이 샌드박스 자식 프로세스 대신 워커 프로세스 안에서 실행됩니다.
 대신 모든 디코더가 메모리 안전한 Rust(`unsafe` 금지)이고, 픽셀 수·할당 크기·텍스트 크기 한도와
-데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. Poppler와 Tesseract는 기존대로 Landlock/seccomp 샌드박스에서 실행됩니다.
+데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. PDF는 렌더링 중 중단이 불가능하므로 `audeniq-photo sanitize`
+명령을 기존 Landlock/seccomp 샌드박스(시간·메모리 한도) 자식 프로세스로 실행합니다(Poppler 자리). Tesseract는 기존대로 샌드박스에서 실행됩니다.
 
 ## 4. 원칙: Rust 구현은 가져와 개선, 나머지는 포팅
 
@@ -49,11 +50,17 @@
     쓰고(0 채우기·임시 버퍼 복사 제거), 스레드별로 스트림 상태를 재사용하며, CPU 기능은 프로세스당 한 번 판별합니다. C 할당자·콜백 API·
     LoongArch/wasm 경로는 제거했고 알고리즘·SIMD 커널·업스트림 단위 테스트는 유지합니다.
     결과: 3000px PNG 정화 1.11 s → 0.73 s, inflate 159 → 110 ms, PNG 디코드 130 → 84 ms (런타임 AVX2/PCLMUL 선택이라 기본 빌드에서도 적용).
+- **PDF**: 성숙한 순수 Rust 렌더러 [hayro](https://github.com/LaurenzV/hayro)를 `photo-pdf*` 크레이트로 합쳤습니다
+  (`crates/photo-pdf/UPSTREAM.md`). Flate는 `photo-deflate`, JPEG는 `photo-jpeg`로 바꿔 같은 엔진을 공유하고,
+  압축 폭탄·픽셀 한도를 넣었으며, 메시 셰이딩 샘플링을 해시맵에서 잘린 조밀 격자로 바꿔 최악 메모리를 1978 MB → 96 MB로 줄였습니다.
+  `pdf::sanitize_pdf`가 `pdfinfo` → `pdftoppm` → JPEG 파일 → 재디코드 → 재인코드 과정을 한 번의 렌더·인코드로 대신합니다
+  (중간 JPEG 손실 단계가 사라짐). 페이지 상자는 뷰어가 보여주는 CropBox를 그립니다(Poppler 기본값은 MediaBox).
 - C/C++/Perl/Python 도구(libjpeg-turbo, LittleCMS, ExifTool, ZBar/quirc, Pillow 정화기, 다음으로 Poppler·Tesseract)는 Rust로 포팅합니다.
 
 ## 5. 장기 계획
 
-1. **2차**: PDF 파서(xref·객체·필터: Flate/DCT/LZW/ASCII85)와 페이지 래스터라이저(경로·이미지·텍스트는 글꼴 래스터화 없이 이미지 기반 문서 우선) → Poppler 제거
+1. **2차 (완료)**: PDF — hayro를 가져와 합치고 Poppler 제거. 남은 합칠 대상: `moxcms` → `photo-icc`, `pic-scale` → 자체 리샘플러,
+   이후 `vello_cpu`·`skrifa`·`kurbo`
 2. **3차**: OCR — Tesseract LSTM 추론 엔진과 traineddata 로더 포팅, 커버 텍스트 검출 전처리 공유
 3. 자체 개발 단계: 포팅 코드를 기준선으로 고정(현재의 비트 동일 테스트)한 뒤 SIMD 경로(target_feature)와 자체 매치파인더·허프만 최적화, 메타데이터 C2PA(JUMBF) 판독 추가
 4. 오디오 도구(ffmpeg/ffprobe) 포팅은 별도 저장소에서 같은 원칙으로 진행하고, 공통 크레이트(`photo-core`, `photo-deflate`)를 공유

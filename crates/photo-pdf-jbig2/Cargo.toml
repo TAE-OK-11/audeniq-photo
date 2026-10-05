@@ -1,0 +1,19 @@
+[package]
+name = "photo-pdf-jbig2"
+description = "JBIG2 decoder (from hayro-jbig2)"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license = "Apache-2.0 OR MIT"
+
+[features]
+default = ["std", "simd"]
+std = []
+simd = ["dep:fearless_simd", "std"]
+
+[dependencies]
+fearless_simd = { workspace = true, optional = true }
+photo-pdf-ccitt.workspace = true
+
+[lints]
+workspace = true

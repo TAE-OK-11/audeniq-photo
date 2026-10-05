@@ -216,7 +216,84 @@ fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
     )
     .unwrap();
     out.push((p, "application/x-audeniq-signature"));
+    // A 3-page scanned document (JPEG pages) and a 2-page text/vector one.
+    let scans: Vec<Vec<u8>> = (0..3)
+        .map(|i| {
+            let page = synthetic(1700, 2200, 10 + i);
+            photo_jpeg::encode(&page, 85, photo_jpeg::Subsampling::S420).unwrap()
+        })
+        .collect();
+    let p = dir.join("document_scan_3p.pdf");
+    std::fs::write(
+        &p,
+        audeniq_photo::pdf::image_only_pdf(&scans, &Deadline::NONE).unwrap(),
+    )
+    .unwrap();
+    out.push((p, "application/pdf"));
+    let p = dir.join("document_text_2p.pdf");
+    std::fs::write(&p, text_pdf(2)).unwrap();
+    out.push((p, "application/pdf"));
     out
+}
+
+/// Pages of Helvetica text lines and ruled boxes (contract-like documents).
+fn text_pdf(pages: usize) -> Vec<u8> {
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        Vec::new(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+    ];
+    let mut kids = Vec::new();
+    for page in 0..pages {
+        let mut content = String::from("0.2 g 1 w\n");
+        for row in 0..45 {
+            let y = 770 - row * 16;
+            content.push_str(&format!(
+                "BT /F1 10 Tf 56 {y} Td (Clause {page}.{row}: The licensor grants the label a non-exclusive right to distribute the recording.) Tj ET\n"
+            ));
+            if row % 9 == 0 {
+                content.push_str(&format!("50 {} 512 14 re S\n", y - 3));
+            }
+        }
+        let n = objects.len() + 1;
+        objects.push(
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>", n + 1)
+                .into_bytes(),
+        );
+        let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        stream.extend_from_slice(content.as_bytes());
+        stream.extend_from_slice(b"\nendstream");
+        objects.push(stream);
+        kids.push(format!("{n} 0 R"));
+    }
+    objects[1] = format!(
+        "<< /Type /Pages /Count {pages} /Kids [{}] >>",
+        kids.join(" ")
+    )
+    .into_bytes();
+    let mut data = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(data.len());
+        data.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        data.extend_from_slice(o);
+        data.extend_from_slice(b"\nendobj\n");
+    }
+    let start = data.len();
+    data.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for o in offsets {
+        data.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    data.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    data
 }
 
 struct Args {
@@ -262,6 +339,7 @@ fn parse_args() -> Args {
 fn mime_of(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("png") => "image/png",
+        Some("pdf") => "application/pdf",
         _ => "image/jpeg",
     }
 }
@@ -269,11 +347,14 @@ fn mime_of(path: &Path) -> &'static str {
 fn main() {
     let args = parse_args();
     let tmp = std::env::temp_dir().join(format!("audeniq-photo-bench-{}", std::process::id()));
-    let files: Vec<(PathBuf, &str)> = if args.files.is_empty() {
+    let all: Vec<(PathBuf, &str)> = if args.files.is_empty() {
         fixtures(&tmp.join("in"))
     } else {
         args.files.iter().map(|f| (f.clone(), mime_of(f))).collect()
     };
+    // PDFs are compared against Poppler separately below.
+    let (pdfs, files): (Vec<_>, Vec<_>) =
+        all.into_iter().partition(|(_, m)| *m == "application/pdf");
     std::fs::create_dir_all(tmp.join("out")).unwrap();
     let have = |t: &str| which(t);
     let (ffprobe, exiftool, zbar, python) = (
@@ -477,6 +558,70 @@ fn main() {
             });
             rows.push((name.clone(), op, rust, ext));
         }
+    }
+
+    // PDF: native parse+render+rebuild vs the former pipeline.
+    let poppler = have("pdfinfo") && have("pdftoppm");
+    for (path, _) in &pdfs {
+        let data = std::fs::read(path).expect("read input");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let pages = audeniq_photo::pdf::info(&data).map_or(1, |i| i.pages);
+        let mut ours = || audeniq_photo::pdf::sanitize_pdf(&data, &deadline).is_ok();
+        let _ = ours();
+        let rust = median(
+            (0..args.iterations)
+                .filter_map(|_| measure_inproc(&mut ours))
+                .collect(),
+        );
+        let raster = tmp.join("out").join("raster");
+        let theirs = || {
+            let mut info = Command::new("pdfinfo");
+            info.arg(path);
+            let mut ppm = Command::new("pdftoppm");
+            ppm.args(audeniq_photo::pdf::pdftoppm_args(pages))
+                .arg(path)
+                .arg(&raster);
+            vec![info, ppm]
+        };
+        // The former pipeline: Poppler, then the image-only rebuild from
+        // its JPEG rasters (timed in-process and added).
+        let former = || -> Option<Sample> {
+            let mut s = measure_cmds(&mut theirs())?;
+            let mut rasters: Vec<PathBuf> = std::fs::read_dir(tmp.join("out"))
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with("raster-"))
+                })
+                .collect();
+            rasters.sort();
+            let bytes: Vec<Vec<u8>> = rasters
+                .iter()
+                .filter_map(|p| std::fs::read(p).ok())
+                .collect();
+            for r in &rasters {
+                std::fs::remove_file(r).ok();
+            }
+            let rebuild =
+                measure_inproc(|| audeniq_photo::pdf::image_only_pdf(&bytes, &deadline).is_ok())?;
+            s.wall += rebuild.wall;
+            s.cpu += rebuild.cpu;
+            Some(s)
+        };
+        let ext = poppler
+            .then(|| {
+                let _ = former();
+                median((0..args.iterations).filter_map(|_| former()).collect())
+            })
+            .flatten();
+        rows.push((
+            name,
+            "pdf sanitize (vs pdfinfo+pdftoppm+rebuild)",
+            rust,
+            ext,
+        ));
     }
 
     // Output sizes of the sanitized files (ours vs the reference script).

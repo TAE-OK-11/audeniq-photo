@@ -18,6 +18,33 @@ photo-icc = { path = "crates/photo-icc" }
 photo-meta = { path = "crates/photo-meta" }
 photo-qr = { path = "crates/photo-qr" }
 audeniq-photo = { path = "crates/audeniq-photo" }
+photo-pdf = { path = "crates/photo-pdf" }
+photo-pdf-syntax = { path = "crates/photo-pdf-syntax" }
+photo-pdf-interpret = { path = "crates/photo-pdf-interpret" }
+photo-pdf-ccitt = { path = "crates/photo-pdf-ccitt" }
+photo-pdf-jbig2 = { path = "crates/photo-pdf-jbig2" }
+photo-pdf-jpeg2000 = { path = "crates/photo-pdf-jpeg2000" }
+photo-pdf-cmap = { path = "crates/photo-pdf-cmap" }
+photo-pdf-postscript = { path = "crates/photo-pdf-postscript" }
+
+# Third-party crates the PDF renderer (from hayro) still uses; candidates
+# for later merging (see docs/PORTING.md).
+bitflags = "2.10"
+bytemuck = "1"
+brotli = { version = "8", default-features = false, features = ["std"] }
+fearless_simd = "1.0.0"
+kurbo = "0.13.0"
+log = "0.4"
+memchr = { version = "2.8.0", default-features = false, features = ["alloc"] }
+moxcms = "0.8.1"
+phf = { version = "0.13.1", default-features = false }
+pic-scale = { version = "0.7.9", default-features = false }
+rustc-hash = "2"
+siphasher = "1"
+skrifa = "0.46.0"
+smallvec = "1"
+vello_cpu = { version = "0.3", default-features = false, features = ["std", "png", "u8_pipeline"] }
+yoke = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -28,6 +55,8 @@ unsafe_code = "forbid"
 # keep optional for now.
 needless_range_loop = "allow"
 chunks_exact_to_as_chunks = "allow"
+# Rasterizer and decoder kernels (from hayro) pass many scalars.
+too_many_arguments = "allow"
 
 [profile.dev.package."*"]
 opt-level = 2

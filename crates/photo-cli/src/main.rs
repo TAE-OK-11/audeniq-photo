@@ -7,19 +7,22 @@
 //! audeniq-photo provenance <file>            provenance fields (AI metadata signals input)
 //! audeniq-photo qr <file>                    decoded QR count
 //! audeniq-photo cover <file>                 all of the above in one pass
-//! audeniq-photo sanitize <src> <dst> <mime>  drop-in for sanitize-upload.py
+//! audeniq-photo sanitize <src> <dst> <mime>  drop-in for sanitize-upload.py (PDF: native,
+//!                                            no Poppler)
+//! audeniq-photo pdf-info <file>              page count and encryption (pdfinfo)
+//! audeniq-photo pdf-render <file> <page> <dst.png>  one page as sanitize renders it (pdftoppm)
 //! audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]
 //! ```
 #![forbid(unsafe_code)]
 
 use audeniq_photo::{Deadline, Kind};
 use serde_json::{Value, json};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: audeniq-photo <probe|meta|color|provenance|qr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo --version"
+        "usage: audeniq-photo <probe|meta|color|provenance|qr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo pdf-info <file>\n       audeniq-photo pdf-render <file> <page> <dst.png>\n       audeniq-photo --version"
     );
     ExitCode::from(2)
 }
@@ -61,53 +64,8 @@ fn meta_json(path: &str, data: &[u8], names: &[String]) -> Result<Value, String>
 }
 
 fn sanitize_pdf(src: &str, dst: &str) -> Result<(), String> {
-    let info = Command::new("pdfinfo")
-        .arg(src)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !info.status.success() {
-        return Err("pdfinfo failed".into());
-    }
-    let pages = audeniq_photo::pdf::pages_from_pdfinfo(&info.stdout).map_err(|e| e.to_string())?;
-    let dir = std::path::Path::new(dst)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    let prefix = dir.join("raster");
-    let ok = Command::new("pdftoppm")
-        .args(audeniq_photo::pdf::pdftoppm_args(pages))
-        .arg(src)
-        .arg(&prefix)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?
-        .success();
-    if !ok {
-        return Err("pdftoppm failed".into());
-    }
-    let mut rasters: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("raster-") && n.ends_with(".jpg"))
-        })
-        .collect();
-    rasters.sort();
-    if rasters.len() != pages as usize {
-        return Err("incomplete document rasterization".into());
-    }
-    let bytes = rasters
-        .iter()
-        .map(std::fs::read)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    let out = audeniq_photo::pdf::image_only_pdf(&bytes, &deadline()).map_err(|e| e.to_string())?;
+    let out =
+        audeniq_photo::pdf::sanitize_pdf(&read(src)?, &deadline()).map_err(|e| e.to_string())?;
     std::fs::write(dst, out).map_err(|e| e.to_string())
 }
 
@@ -174,6 +132,23 @@ fn run(args: &[String]) -> Result<(), String> {
             let out = audeniq_photo::sanitize(&read(src)?, kind, &deadline())
                 .map_err(|e| e.to_string())?;
             std::fs::write(dst, out).map_err(|e| e.to_string())?;
+        }
+        "pdf-info" => {
+            let i = audeniq_photo::pdf::info(&read(file()?)?).map_err(|e| e.to_string())?;
+            print(&json!({"pages": i.pages, "encrypted": i.encrypted}));
+        }
+        "pdf-render" => {
+            let (src, page, dst) = match &args[1..] {
+                [s, p, d] => (
+                    s.as_str(),
+                    p.parse::<usize>().map_err(|e| e.to_string())?,
+                    d,
+                ),
+                _ => return Err("usage: pdf-render <file> <page (1-based)> <dst.png>".into()),
+            };
+            let img = audeniq_photo::pdf::render_page(&read(src)?, page.saturating_sub(1))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(dst, photo_png_encode(&img)?).map_err(|e| e.to_string())?;
         }
         "convert" => {
             let (src, dst) = (file()?, args.get(2).ok_or("missing destination")?);

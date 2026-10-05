@@ -7,12 +7,13 @@
 //! | `exiftool` (color properties, provenance tags) | [`color_report`], [`provenance_fields`] |
 //! | `zbarimg` (QR count) | [`qr_count`] |
 //! | `python3` + Pillow + LittleCMS (`sanitize-upload.py`) | [`sanitize`] |
+//! | Poppler `pdfinfo` + `pdftoppm` (document sanitization) | [`pdf::info`], [`pdf::sanitize_pdf`] |
 //!
 //! Every entry point runs in-process on bytes already in memory, inside a
 //! panic guard, with explicit pixel/allocation limits and a deadline.
-//! All audeniq-photo crates are `#![forbid(unsafe_code)]` except the DEFLATE
-//! engine module of `photo-deflate` (merged from zlib-rs: SIMD kernels and
-//! stream buffers).
+//! All audeniq-photo crates forbid `unsafe` except the DEFLATE engine module
+//! of `photo-deflate` (merged from zlib-rs: SIMD kernels and stream buffers)
+//! and one self-referential page cache in `photo-pdf-syntax` (from hayro).
 #![forbid(unsafe_code)]
 
 mod cover;

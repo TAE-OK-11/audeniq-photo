@@ -1,0 +1,41 @@
+[package]
+name = "photo-pdf-syntax"
+description = "PDF object/stream parser (from hayro-syntax) on photo-deflate and photo-jpeg"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license = "Apache-2.0 OR MIT"
+
+[features]
+default = ["std", "images"]
+std = ["photo-pdf-jbig2?/std", "photo-pdf-jpeg2000?/std", "dep:rustc-hash"]
+images = ["std", "dep:photo-core", "dep:photo-jpeg", "dep:photo-pdf-ccitt", "dep:photo-pdf-jbig2", "dep:photo-pdf-jpeg2000"]
+logging = ["dep:log", "photo-pdf-jpeg2000?/logging"]
+
+[dependencies]
+photo-deflate.workspace = true
+photo-core = { workspace = true, optional = true }
+photo-jpeg = { workspace = true, optional = true }
+photo-pdf-ccitt = { workspace = true, optional = true }
+photo-pdf-jbig2 = { workspace = true, optional = true }
+photo-pdf-jpeg2000 = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+memchr.workspace = true
+rustc-hash = { workspace = true, optional = true }
+smallvec.workspace = true
+
+[dev-dependencies]
+# Reference implementations the crypto unit tests compare against.
+aes = "0.8.4"
+cbc = "0.1.2"
+md5 = "0.8"
+sha2 = "0.10"
+
+# One self-referential cache (page.rs `CachedPages`) needs unsafe.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_range_loop = "allow"
+chunks_exact_to_as_chunks = "allow"
+too_many_arguments = "allow"

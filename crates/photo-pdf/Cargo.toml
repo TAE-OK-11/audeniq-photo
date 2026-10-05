@@ -1,0 +1,26 @@
+[package]
+name = "photo-pdf"
+description = "PDF rasterizer (from hayro)"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license = "Apache-2.0 OR MIT"
+
+[features]
+default = ["embed-fonts", "embed-cmaps", "simd"]
+embed-fonts = ["photo-pdf-interpret/embed-fonts"]
+embed-cmaps = ["photo-pdf-interpret/embed-cmaps"]
+logging = ["photo-pdf-interpret/logging"]
+simd = ["pic-scale/neon", "pic-scale/rdm", "pic-scale/sse", "pic-scale/avx"]
+
+[dependencies]
+photo-pdf-interpret.workspace = true
+bytemuck = { workspace = true, features = ["bytemuck_derive"] }
+fearless_simd.workspace = true
+kurbo.workspace = true
+pic-scale.workspace = true
+rustc-hash.workspace = true
+vello_cpu.workspace = true
+
+[lints]
+workspace = true

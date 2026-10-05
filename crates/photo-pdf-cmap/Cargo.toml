@@ -1,0 +1,19 @@
+[package]
+name = "photo-pdf-cmap"
+description = "PDF CMap parser with embedded predefined CMaps (from hayro-cmap)"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license = "Apache-2.0 OR MIT"
+
+[features]
+default = ["embed-cmaps"]
+std = []
+embed-cmaps = ["std", "dep:brotli"]
+
+[dependencies]
+photo-pdf-postscript.workspace = true
+brotli = { workspace = true, optional = true }
+
+[lints]
+workspace = true

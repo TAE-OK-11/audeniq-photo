@@ -164,6 +164,7 @@ fn clamp(v: i32) -> u8 {
 pub(crate) fn convert(
     planes: &[Plane],
     transform: ColorTransform,
+    invert_cmyk: bool,
     width: usize,
     height: usize,
     deadline: &Deadline,
@@ -182,6 +183,8 @@ pub(crate) fn convert(
     let mut rows: Vec<Vec<u8>> = (0..ch).map(|_| vec![0u8; width]).collect();
     let (mut tmp, mut sums) = (Vec::new(), Vec::new());
     let t = tables();
+    // Pillow's "CMYK;I": invert. PDF: as stored.
+    let inv = if invert_cmyk { 255u8 } else { 0 };
     for (y, out) in data.chunks_exact_mut(width * ch).enumerate() {
         if y % 64 == 0 {
             deadline.check()?;
@@ -202,7 +205,7 @@ pub(crate) fn convert(
             ColorTransform::Cmyk => {
                 for x in 0..width {
                     for c in 0..4 {
-                        out[4 * x + c] = 255 - rows[c][x];
+                        out[4 * x + c] = inv ^ rows[c][x];
                     }
                 }
             }
@@ -211,10 +214,10 @@ pub(crate) fn convert(
                     let yy = i32::from(rows[0][x]);
                     let cb = rows[1][x] as usize;
                     let cr = rows[2][x] as usize;
-                    out[4 * x] = 255 - clamp(255 - (yy + t.cr_r[cr]));
-                    out[4 * x + 1] = 255 - clamp(255 - (yy + ((t.cb_g[cb] + t.cr_g[cr]) >> 16)));
-                    out[4 * x + 2] = 255 - clamp(255 - (yy + t.cb_b[cb]));
-                    out[4 * x + 3] = 255 - rows[3][x];
+                    out[4 * x] = inv ^ clamp(255 - (yy + t.cr_r[cr]));
+                    out[4 * x + 1] = inv ^ clamp(255 - (yy + ((t.cb_g[cb] + t.cr_g[cr]) >> 16)));
+                    out[4 * x + 2] = inv ^ clamp(255 - (yy + t.cb_b[cb]));
+                    out[4 * x + 3] = inv ^ rows[3][x];
                 }
             }
         }

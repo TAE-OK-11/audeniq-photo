@@ -194,22 +194,52 @@ struct ScanComp {
 /// Decode a JPEG to 8-bit pixels: Gray8, Rgb8 or Cmyk8 (Adobe-inverted
 /// back to normal CMYK, as Pillow presents it).
 pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info, Image)> {
-    decode_with(data, limits, deadline, false)
+    decode_with(data, limits, deadline, &DecodeOptions::default())
 }
 
 /// Decode only the luminance of a YCbCr/YCCK JPEG as Gray8 (chroma is
 /// entropy-decoded but never transformed). Other color spaces decode fully.
 /// For detectors (QR) that only need intensity.
 pub fn decode_luma(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info, Image)> {
-    decode_with(data, limits, deadline, true)
+    let opts = DecodeOptions {
+        luma_only: true,
+        ..DecodeOptions::default()
+    };
+    decode_with(data, limits, deadline, &opts)
 }
 
-fn decode_with(
+/// Knobs for embedders whose container overrides JPEG conventions (PDF).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeOptions {
+    /// See [`decode_luma`].
+    pub luma_only: bool,
+    /// Skip the YCbCr→RGB transform of 3-component YCbCr data and return
+    /// the raw component values (PDF `/ColorTransform 0`).
+    pub keep_ycbcr: bool,
+    /// Invert CMYK/YCCK output the way Pillow does (Adobe convention).
+    /// `false` returns the component values as stored (YCCK still has its
+    /// YCC part converted to CMY), which is what PDF `DCTDecode` expects.
+    pub invert_cmyk: bool,
+}
+
+impl Default for DecodeOptions {
+    fn default() -> Self {
+        DecodeOptions {
+            luma_only: false,
+            keep_ycbcr: false,
+            invert_cmyk: true,
+        }
+    }
+}
+
+/// [`decode`] with explicit [`DecodeOptions`].
+pub fn decode_with(
     data: &[u8],
     limits: &Limits,
     deadline: &Deadline,
-    luma: bool,
+    opts: &DecodeOptions,
 ) -> Result<(Info, Image)> {
+    let luma = opts.luma_only;
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return Err(Error::Invalid("not a JPEG file"));
     }
@@ -346,17 +376,14 @@ fn decode_with(
             v_ratio: max_v / c.v,
         })
         .collect();
-    let image = convert(
-        &planes,
-        if luma_only {
-            ColorTransform::Gray
-        } else {
-            transform
-        },
-        w,
-        h,
-        deadline,
-    )?;
+    let output = if luma_only {
+        ColorTransform::Gray
+    } else if opts.keep_ycbcr && transform == ColorTransform::YCbCr {
+        ColorTransform::Rgb
+    } else {
+        transform
+    };
+    let image = convert(&planes, output, opts.invert_cmyk, w, h, deadline)?;
     drop(planes);
     let info = Info {
         icc_profile: assemble_icc(&mut icc_chunks),

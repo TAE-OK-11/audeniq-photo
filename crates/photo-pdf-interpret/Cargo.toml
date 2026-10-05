@@ -1,0 +1,30 @@
+[package]
+name = "photo-pdf-interpret"
+description = "PDF content stream interpreter (from hayro-interpret)"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license = "Apache-2.0 OR MIT"
+
+[features]
+default = ["embed-fonts", "embed-cmaps"]
+embed-fonts = []
+embed-cmaps = ["photo-pdf-cmap/embed-cmaps"]
+logging = ["dep:log", "photo-pdf-syntax/logging"]
+
+[dependencies]
+photo-pdf-cmap.workspace = true
+photo-pdf-syntax = { workspace = true, features = ["std", "images"] }
+bitflags.workspace = true
+kurbo.workspace = true
+log = { workspace = true, optional = true }
+moxcms = { workspace = true, features = ["in_place"] }
+phf = { workspace = true, features = ["macros"] }
+rustc-hash.workspace = true
+siphasher.workspace = true
+skrifa.workspace = true
+smallvec.workspace = true
+yoke = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true
