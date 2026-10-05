@@ -1,0 +1,13 @@
+[package]
+name = "photo-deflate"
+description = "DEFLATE/zlib codec, CRC-32 and Adler-32 (port of zlib/miniz algorithms)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+
+[lints]
+workspace = true

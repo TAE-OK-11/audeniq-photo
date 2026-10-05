@@ -1,0 +1,13 @@
+[package]
+name = "photo-jpeg"
+description = "JPEG decoder (baseline/progressive, libjpeg-turbo compatible output) and baseline encoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+
+[lints]
+workspace = true

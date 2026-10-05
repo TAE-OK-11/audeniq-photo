@@ -1,0 +1,10 @@
+[package]
+name = "photo-core"
+description = "Shared errors, resource limits and deadlines for audeniq-photo decoders"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

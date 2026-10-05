@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "UNLICENSED"
+repository = "https://github.com/TAE-OK-11/audeniq-photo"
+
+[workspace.dependencies]
+photo-core = { path = "crates/photo-core" }
+photo-deflate = { path = "crates/photo-deflate" }
+photo-png = { path = "crates/photo-png" }
+photo-jpeg = { path = "crates/photo-jpeg" }
+photo-icc = { path = "crates/photo-icc" }
+photo-meta = { path = "crates/photo-meta" }
+photo-qr = { path = "crates/photo-qr" }
+audeniq-photo = { path = "crates/audeniq-photo" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"

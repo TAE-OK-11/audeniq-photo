@@ -1,0 +1,13 @@
+[package]
+name = "photo-icc"
+description = "ICC profile parser and LittleCMS-compatible conversion to sRGB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-core.workspace = true
+
+[lints]
+workspace = true
