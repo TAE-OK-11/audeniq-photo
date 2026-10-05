@@ -2,15 +2,17 @@
 
 Audeniq 백엔드가 외부 프로세스로 실행하던 이미지 도구(ffprobe, ExifTool, ZBar,
 Python/Pillow/LittleCMS 업로드 정화기)를 **Rust로 포팅해 하나의 라이브러리**로 합친 저장소입니다.
-모든 크레이트는 `#![forbid(unsafe_code)]`이며 외부 C 라이브러리나 실행 파일에 의존하지 않습니다
-(PDF 래스터화의 Poppler만 2단계 포팅 대상으로 남아 있습니다 — [docs/PORTING.md](docs/PORTING.md)).
+원칙: **이미 Rust로 된 우수한 구현은 가져와 Audeniq에 맞게 개선**하고(zlib-rs), **Rust가 아닌 도구는 포팅**합니다.
+자체 크레이트는 모두 `#![forbid(unsafe_code)]`이고, `unsafe`는 벤더링한 zlib-rs(SIMD 커널)에만 있습니다.
+외부 C 라이브러리나 실행 파일에는 의존하지 않습니다(Poppler·Tesseract는 다음 단계 — [docs/PORTING.md](docs/PORTING.md)).
 
 ## 구성
 
 | 크레이트 | 역할 | 포팅 원본 |
 |---|---|---|
 | `photo-core` | 공통 오류·자원 한도·데드라인·픽셀 형식 | — |
-| `photo-deflate` | zlib/DEFLATE 압축·해제, CRC-32, Adler-32 | zlib, miniz |
+| `photo-zlib` | zlib-rs 벤더링(zlib-ng의 Rust 포트, 런타임 SIMD 선택) | [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) 0.6.8 |
+| `photo-deflate` | 출력 한도·절단/정확 모드를 더한 안전한 zlib API, CRC-32, Adler-32 | — |
 | `photo-png` | PNG 디코더(전 색상형·비트 깊이·Adam7), 스트리밍 인코더, 전자서명 PNG 엄격 검증 | libpng 동작, `sanitize-upload.py` |
 | `photo-jpeg` | JPEG 디코더(베이스라인·프로그레시브), 베이스라인 인코더 | libjpeg-turbo (ISLOW IDCT, fancy 업샘플링, jdcolor, jcdctmgr) |
 | `photo-icc` | ICC 파서, sRGB 변환(매트릭스-셰이퍼·LUT·CMYK, BPC) | LittleCMS 2 |
@@ -61,8 +63,8 @@ let meta = audeniq_photo::metadata_file(Path::new("master.wav"))?; // 오디오 
 |---|---:|---:|---|
 | 커버 종합 검사 3000px JPEG (probe+색상+출처+QR) | 700 ms / 91 MB | 152 ms / 41 MB | 4.6× |
 | 커버 종합 검사 1400px JPEG | 316 ms | 31 ms | 10× |
-| 3000px PNG 정화 | 2.66 s | 1.11 s | 2.4× |
+| 3000px PNG 정화 | 2.60 s | 0.73 s | 3.5× |
 | 1400px JPEG(Adobe RGB) 정화 | 148 ms | 61 ms | 2.4× |
-| 정화 처리량(4스레드) | 6.2 files/s | 13.4 files/s | 2.2× |
+| 정화 처리량(4스레드) | 6.1 files/s | 17.6 files/s | 2.9× |
 
 `-C target-cpu=x86-64-v3`(백엔드 Dockerfile의 `TARGET_CPU`) 빌드에서는 3000px JPEG 정화가 1.4×, 처리량 2.4×입니다.

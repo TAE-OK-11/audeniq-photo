@@ -41,7 +41,16 @@
 대신 모든 디코더가 메모리 안전한 Rust(`unsafe` 금지)이고, 픽셀 수·할당 크기·텍스트 크기 한도와
 데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. Poppler와 Tesseract는 기존대로 Landlock/seccomp 샌드박스에서 실행됩니다.
 
-## 4. 장기 계획
+## 4. 원칙: Rust 구현은 가져와 개선, 나머지는 포팅
+
+- 성숙한 Rust 구현이 있는 영역은 벤더링해 Audeniq 요구에 맞게 조정합니다.
+  - **zlib**: 자체 deflate 대신 [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs)(zlib-ng 포트)를 `crates/photo-zlib`로
+    가져왔습니다. 소스는 업스트림과 동일하게 유지하고(동기화 절차는 `crates/photo-zlib/UPSTREAM.md`), 기본 기능을 순수 Rust 할당자로 바꿨으며,
+    `photo-deflate`가 출력 한도·PNG 절단 모드·증거용 정확 모드를 얹은 안전한 API를 제공합니다.
+    결과: 3000px PNG 정화 1.11 s → 0.73 s, inflate 159 → 110 ms, PNG 디코드 130 → 84 ms (런타임 AVX2/PCLMUL 선택이라 기본 빌드에서도 적용).
+- C/C++/Perl/Python 도구(libjpeg-turbo, LittleCMS, ExifTool, ZBar/quirc, Pillow 정화기, 다음으로 Poppler·Tesseract)는 Rust로 포팅합니다.
+
+## 5. 장기 계획
 
 1. **2차**: PDF 파서(xref·객체·필터: Flate/DCT/LZW/ASCII85)와 페이지 래스터라이저(경로·이미지·텍스트는 글꼴 래스터화 없이 이미지 기반 문서 우선) → Poppler 제거
 2. **3차**: OCR — Tesseract LSTM 추론 엔진과 traineddata 로더 포팅, 커버 텍스트 검출 전처리 공유
@@ -53,49 +62,49 @@
 `audeniq-photo-bench --iterations 5 --threads 4` (4 vCPU Intel Xeon 2.1 GHz). 외부 측정은 자식 프로세스의
 `ru_maxrss`/CPU, Rust는 프로세스 전체 VmHWM(측정마다 초기화)이라 Rust 쪽 RSS에는 벤치 프로세스 자체와 입력 버퍼가 포함됩니다.
 
-### 기본 빌드 (x86-64)
+### 기본 빌드 (x86-64, zlib-rs 적용 후)
 
 | file | operation | Rust wall ms | Rust CPU ms | Rust peak RSS MB | external wall ms | external CPU ms | external peak RSS MB | speed-up |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| cover_3000.jpg | probe | 0 µs | 0 µs | 10.3 | 46.1 | 46.0 | 51.9 | 130309.1× |
-| cover_3000.jpg | color | 2 µs | 0 µs | 10.3 | 82.2 | 81.9 | 18.7 | 53663.7× |
-| cover_3000.jpg | provenance | 1 µs | 0 µs | 10.3 | 85.1 | 84.9 | 18.8 | 106749.3× |
-| cover_3000.jpg | qr | 151.8 | 152.0 | 41.2 | 486.6 | 486.4 | 90.7 | 3.2× |
-| cover_3000.jpg | cover (all of the above) | 151.5 | 151.9 | 41.2 | 699.5 | 698.7 | 90.7 | 4.6× |
-| cover_3000.jpg | sanitize | 249.7 | 248.0 | 45.6 | 252.9 | 251.4 | 120.3 | 1.0× |
-| cover_3000.png | probe | 6.8 | 8.0 | 45.6 | 214.9 | 214.6 | 93.7 | 31.7× |
-| cover_3000.png | color | 2 µs | 0 µs | 45.6 | 88.6 | 88.5 | 45.3 | 39961.9× |
-| cover_3000.png | provenance | 2 µs | 0 µs | 45.6 | 86.8 | 86.7 | 45.3 | 36626.0× |
-| cover_3000.png | qr | 263.8 | 264.0 | 71.0 | 630.9 | 630.6 | 90.9 | 2.4× |
-| cover_3000.png | cover (all of the above) | 304.1 | 304.0 | 71.0 | 1006.3 | 1005.6 | 93.7 | 3.3× |
-| cover_3000.png | sanitize | 1111.7 | 1111.8 | 71.0 | 2656.1 | 2651.8 | 120.2 | 2.4× |
-| cover_1400.jpg | probe | 0 µs | 0 µs | 45.6 | 46.6 | 46.5 | 49.3 | 169582.7× |
-| cover_1400.jpg | color | 1 µs | 0 µs | 45.6 | 84.0 | 83.8 | 45.3 | 67269.7× |
-| cover_1400.jpg | provenance | 1 µs | 0 µs | 45.6 | 84.3 | 84.1 | 45.3 | 64769.5× |
-| cover_1400.jpg | qr | 29.4 | 32.0 | 45.6 | 100.1 | 100.0 | 45.4 | 3.4× |
-| cover_1400.jpg | cover (all of the above) | 30.8 | 32.0 | 45.6 | 316.1 | 315.5 | 49.2 | 10.3× |
-| cover_1400.jpg | sanitize | 49.5 | 48.0 | 45.6 | 96.9 | 96.0 | 45.4 | 2.0× |
-| cover_1400_adobergb.jpg | probe | 1 µs | 0 µs | 45.6 | 40.8 | 40.6 | 49.0 | 45455.7× |
-| cover_1400_adobergb.jpg | color | 4 µs | 0 µs | 45.6 | 84.0 | 83.8 | 45.4 | 23268.2× |
-| cover_1400_adobergb.jpg | provenance | 5 µs | 0 µs | 45.6 | 91.0 | 90.8 | 45.4 | 18807.9× |
-| cover_1400_adobergb.jpg | qr | 29.7 | 28.0 | 45.6 | 97.6 | 97.4 | 45.4 | 3.3× |
-| cover_1400_adobergb.jpg | cover (all of the above) | 29.3 | 28.0 | 45.6 | 313.6 | 313.0 | 48.9 | 10.7× |
-| cover_1400_adobergb.jpg | sanitize | 61.0 | 60.0 | 45.6 | 147.9 | 147.2 | 45.3 | 2.4× |
-| signature.png | sanitize | 2.5 | 4.0 | 45.6 | 64.2 | 63.9 | 45.3 | 26.1× |
+| cover_3000.jpg | probe | 0 µs | 0 µs | 10.1 | 46.0 | 45.8 | 52.1 | 141143.3× |
+| cover_3000.jpg | color | 1 µs | 0 µs | 10.1 | 86.1 | 85.9 | 18.7 | 94594.4× |
+| cover_3000.jpg | provenance | 1 µs | 0 µs | 10.1 | 84.0 | 83.8 | 18.8 | 58627.3× |
+| cover_3000.jpg | qr | 155.8 | 156.0 | 40.8 | 547.8 | 547.4 | 90.8 | 3.5× |
+| cover_3000.jpg | cover (all of the above) | 163.4 | 164.0 | 40.8 | 710.6 | 709.3 | 90.7 | 4.3× |
+| cover_3000.jpg | sanitize | 285.2 | 287.9 | 45.1 | 269.9 | 268.0 | 120.4 | 0.9× |
+| cover_3000.png | probe | 713 µs | 0 µs | 45.1 | 225.7 | 225.5 | 94.4 | 316.8× |
+| cover_3000.png | color | 3 µs | 0 µs | 45.1 | 91.2 | 91.0 | 44.6 | 29518.5× |
+| cover_3000.png | provenance | 3 µs | 0 µs | 45.1 | 91.0 | 90.9 | 44.7 | 34088.8× |
+| cover_3000.png | qr | 218.8 | 220.0 | 70.5 | 627.4 | 626.6 | 91.1 | 2.9× |
+| cover_3000.png | cover (all of the above) | 228.6 | 228.0 | 70.5 | 1005.5 | 1004.8 | 94.3 | 4.4× |
+| cover_3000.png | sanitize | 732.3 | 731.9 | 70.6 | 2596.6 | 2592.4 | 120.2 | 3.5× |
+| cover_1400.jpg | probe | 0 µs | 0 µs | 45.1 | 43.2 | 42.9 | 49.7 | 162266.6× |
+| cover_1400.jpg | color | 1 µs | 0 µs | 45.1 | 87.9 | 87.7 | 44.9 | 63036.3× |
+| cover_1400.jpg | provenance | 1 µs | 0 µs | 45.1 | 88.0 | 87.8 | 44.9 | 104443.4× |
+| cover_1400.jpg | qr | 31.9 | 32.0 | 45.1 | 102.1 | 102.0 | 44.9 | 3.2× |
+| cover_1400.jpg | cover (all of the above) | 28.6 | 28.0 | 45.1 | 320.7 | 319.9 | 49.4 | 11.2× |
+| cover_1400.jpg | sanitize | 49.8 | 48.0 | 45.1 | 98.4 | 97.7 | 44.9 | 2.0× |
+| cover_1400_adobergb.jpg | probe | 1 µs | 0 µs | 45.1 | 46.3 | 46.1 | 49.5 | 33863.9× |
+| cover_1400_adobergb.jpg | color | 6 µs | 0 µs | 45.1 | 96.6 | 96.4 | 44.9 | 15022.3× |
+| cover_1400_adobergb.jpg | provenance | 3 µs | 0 µs | 45.1 | 85.9 | 85.8 | 45.0 | 25442.6× |
+| cover_1400_adobergb.jpg | qr | 29.0 | 28.0 | 45.1 | 102.3 | 102.1 | 45.0 | 3.5× |
+| cover_1400_adobergb.jpg | cover (all of the above) | 28.7 | 28.0 | 45.1 | 322.2 | 321.7 | 49.3 | 11.2× |
+| cover_1400_adobergb.jpg | sanitize | 61.2 | 60.0 | 45.1 | 145.9 | 145.7 | 45.0 | 2.4× |
+| signature.png | sanitize | 1.3 | 0 µs | 45.1 | 66.1 | 65.7 | 45.0 | 51.6× |
 
-Sanitize throughput with 4 threads: Rust 13.4 files/s, Python/Pillow 6.2 files/s (2.2×)
+Sanitize throughput with 4 threads: Rust 17.6 files/s, Python/Pillow 6.1 files/s (2.9×)
 
 | file | sanitized size (Rust) | sanitized size (Python/Pillow) |
 |---|---:|---:|
 | cover_3000.jpg | 4353 KiB | 4353 KiB |
-| cover_3000.png | 10793 KiB | 10529 KiB |
+| cover_3000.png | 10981 KiB | 10529 KiB |
 | cover_1400.jpg | 730 KiB | 730 KiB |
 | cover_1400_adobergb.jpg | 866 KiB | 866 KiB |
 | signature.png | 2 KiB | 2 KiB |
 
 Rust peak RSS is the whole benchmark process (VmHWM, reset before each run); external figures are the child's ru_maxrss. CPU is user+system time.
 
-### `-C target-cpu=x86-64-v3`
+### `-C target-cpu=x86-64-v3` (zlib-rs 적용 전 측정)
 
 | file | operation | Rust wall ms | Rust CPU ms | Rust peak RSS MB | external wall ms | external CPU ms | external peak RSS MB | speed-up |
 |---|---|---:|---:|---:|---:|---:|---:|---:|

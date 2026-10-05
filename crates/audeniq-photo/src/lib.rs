@@ -10,7 +10,8 @@
 //!
 //! Every entry point runs in-process on bytes already in memory, inside a
 //! panic guard, with explicit pixel/allocation limits and a deadline.
-//! All decoders are `#![forbid(unsafe_code)]`.
+//! All audeniq-photo crates are `#![forbid(unsafe_code)]`; the only `unsafe`
+//! is inside the vendored zlib-rs (`photo-zlib`) SIMD and stream code.
 #![forbid(unsafe_code)]
 
 mod cover;

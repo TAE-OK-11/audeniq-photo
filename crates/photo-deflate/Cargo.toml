@@ -1,6 +1,6 @@
 [package]
 name = "photo-deflate"
-description = "DEFLATE/zlib codec, CRC-32 and Adler-32 (port of zlib/miniz algorithms)"
+description = "zlib/DEFLATE for audeniq-photo: safe, bounded API over the vendored zlib-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 photo-core.workspace = true
+zlib-rs = { package = "photo-zlib", path = "../photo-zlib" }
 
 [lints]
 workspace = true

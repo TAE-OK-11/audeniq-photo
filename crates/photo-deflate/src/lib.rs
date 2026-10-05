@@ -1,17 +1,17 @@
-//! DEFLATE (RFC 1951) and zlib (RFC 1950) in safe Rust.
+//! DEFLATE (RFC 1951) and zlib (RFC 1950) for audeniq-photo.
 //!
-//! The decoder follows zlib's `inflate_fast` structure: a 64-bit bit buffer
-//! and a single-level lookup table with a canonical slow path for long codes.
-//! The encoder is a streaming port of zlib's lazy-matching `deflate_slow`
-//! with miniz's length-limited Huffman construction, so memory stays at a
-//! fixed ~400 KiB regardless of input size.
+//! The engine is zlib-rs (vendored as `photo-zlib`): a memory-safe port of
+//! zlib-ng with runtime-selected SIMD (AVX2/AVX-512/NEON) for matching,
+//! CRC-32 and Adler-32. This crate keeps the workspace's API and adds what
+//! the decoders need on top: hard output limits, a truncating mode for PNG
+//! rows, an exact mode for evidence-grade streams, and the shared error type.
 #![forbid(unsafe_code)]
 
 mod checksum;
-mod deflate;
-mod inflate;
+mod stream;
 
 pub use checksum::{Adler32, Crc32, adler32, crc32};
-pub use deflate::{Compressor, Level, compress_zlib};
-pub use inflate::{Inflated, inflate_raw, inflate_zlib, inflate_zlib_exact};
 pub use photo_core::{Error, Result};
+pub use stream::{
+    Compressor, Inflated, Level, compress_zlib, inflate_raw, inflate_zlib, inflate_zlib_exact,
+};
