@@ -17,6 +17,9 @@
 //! ```
 #![forbid(unsafe_code)]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use audeniq_photo::{Deadline, Kind};
 use serde_json::{Value, json};
 use std::process::ExitCode;

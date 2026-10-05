@@ -10,6 +10,9 @@
 // Only `wait4` (child rusage) needs FFI; everything else is safe Rust.
 #![deny(unsafe_code)]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use audeniq_photo::{Deadline, Image, Kind, PixelFormat};
 use serde_json::json;
 use std::path::{Path, PathBuf};

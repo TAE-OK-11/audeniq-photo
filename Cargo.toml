@@ -30,6 +30,8 @@ photo-pdf-postscript = { path = "crates/photo-pdf-postscript" }
 # Third-party crates the PDF renderer (from hayro) still uses; candidates
 # for later merging (see docs/PORTING.md).
 bitflags = "2.10"
+# Global allocator of the binaries (libraries never pick one).
+mimalloc = { version = "0.1.52", default-features = false }
 bytemuck = "1"
 brotli = { version = "8", default-features = false, features = ["std"] }
 fearless_simd = "1.0.0"
