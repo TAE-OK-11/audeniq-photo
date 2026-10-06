@@ -17,6 +17,7 @@ photo-jpeg = { path = "crates/photo-jpeg" }
 photo-icc = { path = "crates/photo-icc" }
 photo-meta = { path = "crates/photo-meta" }
 photo-qr = { path = "crates/photo-qr" }
+photo-ocr = { path = "crates/photo-ocr" }
 audeniq-photo = { path = "crates/audeniq-photo" }
 photo-pdf = { path = "crates/photo-pdf" }
 photo-pdf-syntax = { path = "crates/photo-pdf-syntax" }
@@ -76,3 +77,7 @@ panic = "unwind"
 inherits = "release"
 debug = true
 strip = false
+
+# The LSTM forward pass is unusably slow unoptimized; keep tests fast.
+[profile.dev.package.photo-ocr]
+opt-level = 3

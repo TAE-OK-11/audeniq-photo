@@ -1,0 +1,17 @@
+[package]
+name = "photo-ocr"
+description = "OCR: port of Tesseract's LSTM line recognizer (tessdata_fast models, eng/kor)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+
+[dependencies]
+photo-core.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+audeniq-photo.workspace = true
+photo-png.workspace = true

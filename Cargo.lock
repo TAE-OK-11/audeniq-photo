@@ -583,6 +583,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "photo-ocr"
+version = "0.1.0"
+dependencies = [
+ "audeniq-photo",
+ "photo-core",
+ "photo-png",
+]
+
+[[package]]
 name = "photo-pdf"
 version = "0.1.0"
 dependencies = [
