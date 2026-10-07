@@ -748,3 +748,78 @@ pub fn outlines_to_blobs(
     }
     (good, bad)
 }
+
+/// `find_cblob_limits` / `find_cblob_vlimits` without rotation: the y range
+/// of outline points with `leftx <= x <= rightx`, as (ymin, ymax).
+pub fn find_cblob_limits(blob: &CBlob, leftx: f32, rightx: f32) -> (f32, f32) {
+    let mut ymin = i32::MAX as f32;
+    let mut ymax = -i32::MAX as f32;
+    for o in &blob.outlines {
+        let mut pos = o.start;
+        for &s in &o.steps {
+            if pos.x as f32 >= leftx && pos.x as f32 <= rightx {
+                let y = pos.y as f32;
+                if y < ymin {
+                    ymin = y;
+                }
+                if y > ymax {
+                    ymax = y;
+                }
+            }
+            pos += STEP[s as usize];
+        }
+    }
+    (ymin, ymax)
+}
+
+/// `find_cblob_hlimits`: the x range of outline points with
+/// `bottomy <= y <= topy`, as (xmin, xmax).
+pub fn find_cblob_hlimits(blob: &CBlob, bottomy: f32, topy: f32) -> (f32, f32) {
+    let mut xmin = i32::MAX as f32;
+    let mut xmax = -i32::MAX as f32;
+    for o in &blob.outlines {
+        let mut pos = o.start;
+        for &s in &o.steps {
+            if pos.y as f32 >= bottomy && pos.y as f32 <= topy {
+                let x = pos.x as f32;
+                if x < xmin {
+                    xmin = x;
+                }
+                if x > xmax {
+                    xmax = x;
+                }
+            }
+            pos += STEP[s as usize];
+        }
+    }
+    (xmin, xmax)
+}
+
+/// `C_BLOB::render_outline`: the top-level outline pixels only.
+pub fn render_outline(blob: &CBlob) -> Bitmap {
+    let b = blob.bounding_box();
+    let mut pix = Bitmap::new(b.width().max(0) as usize, b.height().max(0) as usize);
+    let (left, top) = (b.left, b.top);
+    let mut set = |x: i32, y: i32| {
+        if x >= 0 && y >= 0 && (x as usize) < pix.width && (y as usize) < pix.height {
+            pix.set(x as usize, y as usize);
+        }
+    };
+    for o in &blob.outlines {
+        let mut pos = o.start;
+        for &s in &o.steps {
+            let st = STEP[s as usize];
+            if st.y < 0 {
+                set(pos.x - left, top - pos.y);
+            } else if st.y > 0 {
+                set(pos.x - left - 1, top - pos.y - 1);
+            } else if st.x < 0 {
+                set(pos.x - left - 1, top - pos.y);
+            } else if st.x > 0 {
+                set(pos.x - left, top - pos.y - 1);
+            }
+            pos += st;
+        }
+    }
+    pix
+}

@@ -11,6 +11,7 @@ const NIL: usize = usize::MAX;
 struct Node<T> {
     val: T,
     next: usize,
+    prev: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -48,7 +49,11 @@ impl<T: Copy> EList<T> {
     // Nodes are never reused: an iterator may still hold an extracted
     // node as its cycle point, which must not alias a new element.
     fn alloc(&mut self, val: T) -> usize {
-        self.nodes.push(Node { val, next: NIL });
+        self.nodes.push(Node {
+            val,
+            next: NIL,
+            prev: NIL,
+        });
         self.nodes.len() - 1
     }
 
@@ -96,11 +101,19 @@ impl<T: Copy> EList<T> {
         let n = self.alloc(val);
         if self.last == NIL {
             self.nodes[n].next = n;
+            self.nodes[n].prev = n;
         } else {
-            self.nodes[n].next = self.nodes[self.last].next;
-            self.nodes[self.last].next = n;
+            let first = self.nodes[self.last].next;
+            self.link(n, first);
+            self.link(self.last, n);
         }
         self.last = n;
+    }
+
+    /// Sets `a.next = b` and `b.prev = a`.
+    fn link(&mut self, a: usize, b: usize) {
+        self.nodes[a].next = b;
+        self.nodes[b].prev = a;
     }
 
     /// Removes and returns every element (the list becomes empty).
@@ -143,7 +156,7 @@ impl<T: Copy> EList<T> {
     }
 }
 
-/// `ELIST_ITERATOR`. The list is passed to every call.
+/// `ELIST_ITERATOR` / `ELIST2_ITERATOR`. The list is passed to every call.
 #[derive(Clone, Copy, Debug)]
 pub struct Iter {
     prev: usize,
@@ -204,7 +217,26 @@ impl Iter {
         Some(list.nodes[self.current].val)
     }
 
-    /// `data_relative(offset)`.
+    /// `ELIST2_ITERATOR::backward`.
+    pub fn backward<T: Copy>(&mut self, list: &EList<T>) -> Option<T> {
+        if list.is_empty() {
+            return None;
+        }
+        if self.current != NIL {
+            self.next = self.current;
+            self.started_cycling = true;
+            self.current = list.nodes[self.current].prev;
+        } else {
+            if self.ex_current_was_cycle_pt {
+                self.cycle_pt = self.prev;
+            }
+            self.current = self.prev;
+        }
+        self.prev = list.nodes[self.current].prev;
+        Some(list.nodes[self.current].val)
+    }
+
+    /// `data_relative(offset)`; negative offsets walk backwards (ELIST2).
     pub fn data_relative<T: Copy>(&self, list: &EList<T>, offset: i32) -> T {
         if offset == -1 {
             return list.nodes[self.prev].val;
@@ -214,8 +246,14 @@ impl Iter {
         } else {
             self.prev
         };
-        for _ in 0..offset {
-            p = list.nodes[p].next;
+        if offset < 0 {
+            for _ in 0..-offset {
+                p = list.nodes[p].prev;
+            }
+        } else {
+            for _ in 0..offset {
+                p = list.nodes[p].next;
+            }
         }
         list.nodes[p].val
     }
@@ -227,7 +265,7 @@ impl Iter {
             self.next = NIL;
             list.last = NIL;
         } else {
-            list.nodes[self.prev].next = self.next;
+            list.link(self.prev, self.next);
             self.ex_current_was_last = cur == list.last;
             if self.ex_current_was_last {
                 list.last = self.prev;
@@ -249,11 +287,25 @@ impl Iter {
         (self.current != NIL).then(|| list.nodes[self.current].val)
     }
 
+    /// `ELIST_ITERATOR::move_to_last` (walks forward).
     pub fn move_to_last<T: Copy>(&mut self, list: &EList<T>) -> Option<T> {
         while self.current != list.last {
             self.forward(list);
         }
         (self.current != NIL).then(|| list.nodes[self.current].val)
+    }
+
+    /// `ELIST2_ITERATOR::move_to_last` (jumps).
+    pub fn move_to_last2<T: Copy>(&mut self, list: &EList<T>) -> Option<T> {
+        self.current = list.last;
+        if self.current == NIL {
+            self.prev = NIL;
+            self.next = NIL;
+            return None;
+        }
+        self.prev = list.nodes[self.current].prev;
+        self.next = list.nodes[self.current].next;
+        Some(list.nodes[self.current].val)
     }
 
     pub fn mark_cycle_pt(&mut self) {
@@ -284,20 +336,20 @@ impl Iter {
     pub fn add_after_then_move<T: Copy>(&mut self, list: &mut EList<T>, val: T) {
         let n = list.alloc(val);
         if list.is_empty() {
-            list.nodes[n].next = n;
+            list.link(n, n);
             list.last = n;
             self.prev = n;
             self.next = n;
         } else {
-            list.nodes[n].next = self.next;
+            list.link(n, self.next);
             if self.current != NIL {
-                list.nodes[self.current].next = n;
+                list.link(self.current, n);
                 self.prev = self.current;
                 if self.current == list.last {
                     list.last = n;
                 }
             } else {
-                list.nodes[self.prev].next = n;
+                list.link(self.prev, n);
                 if self.ex_current_was_last {
                     list.last = n;
                 }
@@ -312,16 +364,16 @@ impl Iter {
     pub fn add_after_stay_put<T: Copy>(&mut self, list: &mut EList<T>, val: T) {
         let n = list.alloc(val);
         if list.is_empty() {
-            list.nodes[n].next = n;
+            list.link(n, n);
             list.last = n;
             self.prev = n;
             self.next = n;
             self.ex_current_was_last = false;
             self.current = NIL;
         } else {
-            list.nodes[n].next = self.next;
+            list.link(n, self.next);
             if self.current != NIL {
-                list.nodes[self.current].next = n;
+                list.link(self.current, n);
                 if self.prev == self.current {
                     self.prev = n;
                 }
@@ -329,7 +381,7 @@ impl Iter {
                     list.last = n;
                 }
             } else {
-                list.nodes[self.prev].next = n;
+                list.link(self.prev, n);
                 if self.ex_current_was_last {
                     list.last = n;
                     self.ex_current_was_last = false;
@@ -342,17 +394,17 @@ impl Iter {
     pub fn add_before_then_move<T: Copy>(&mut self, list: &mut EList<T>, val: T) {
         let n = list.alloc(val);
         if list.is_empty() {
-            list.nodes[n].next = n;
+            list.link(n, n);
             list.last = n;
             self.prev = n;
             self.next = n;
         } else {
-            list.nodes[self.prev].next = n;
+            list.link(self.prev, n);
             if self.current != NIL {
-                list.nodes[n].next = self.current;
+                list.link(n, self.current);
                 self.next = self.current;
             } else {
-                list.nodes[n].next = self.next;
+                list.link(n, self.next);
                 if self.ex_current_was_last {
                     list.last = n;
                 }
@@ -367,21 +419,21 @@ impl Iter {
     pub fn add_before_stay_put<T: Copy>(&mut self, list: &mut EList<T>, val: T) {
         let n = list.alloc(val);
         if list.is_empty() {
-            list.nodes[n].next = n;
+            list.link(n, n);
             list.last = n;
             self.prev = n;
             self.next = n;
             self.ex_current_was_last = true;
             self.current = NIL;
         } else {
-            list.nodes[self.prev].next = n;
+            list.link(self.prev, n);
             if self.current != NIL {
-                list.nodes[n].next = self.current;
+                list.link(n, self.current);
                 if self.next == self.current {
                     self.next = n;
                 }
             } else {
-                list.nodes[n].next = self.next;
+                list.link(n, self.next);
                 if self.ex_current_was_last {
                     list.last = n;
                 }
@@ -390,38 +442,44 @@ impl Iter {
         }
     }
 
+    fn chain<T: Copy>(list: &mut EList<T>, vals: &[T]) -> (usize, usize) {
+        let ids: Vec<usize> = vals.iter().map(|&v| list.alloc(v)).collect();
+        for w in ids.windows(2) {
+            list.link(w[0], w[1]);
+        }
+        (ids[0], ids[ids.len() - 1])
+    }
+
     /// Moves the elements of `vals` (in order) into the list after the
     /// current element, without moving (`add_list_after`).
     pub fn add_list_after<T: Copy>(&mut self, list: &mut EList<T>, vals: &[T]) {
         if vals.is_empty() {
             return;
         }
-        let ids: Vec<usize> = vals.iter().map(|&v| list.alloc(v)).collect();
-        for w in ids.windows(2) {
-            list.nodes[w[0]].next = w[1];
-        }
-        let (first, last) = (ids[0], ids[ids.len() - 1]);
+        let (first, last) = Self::chain(list, vals);
         if list.is_empty() {
-            list.nodes[last].next = first;
+            list.link(last, first);
             list.last = last;
             self.prev = last;
             self.next = first;
             self.ex_current_was_last = true;
             self.current = NIL;
         } else if self.current != NIL {
-            list.nodes[self.current].next = first;
+            let nx = self.next;
+            list.link(self.current, first);
             if self.current == list.last {
                 list.last = last;
             }
-            list.nodes[last].next = self.next;
+            list.link(last, nx);
             self.next = first;
         } else {
-            list.nodes[self.prev].next = first;
+            let nx = self.next;
+            list.link(self.prev, first);
             if self.ex_current_was_last {
                 list.last = last;
                 self.ex_current_was_last = false;
             }
-            list.nodes[last].next = self.next;
+            list.link(last, nx);
             self.next = first;
         }
     }
@@ -432,24 +490,20 @@ impl Iter {
         if vals.is_empty() {
             return;
         }
-        let ids: Vec<usize> = vals.iter().map(|&v| list.alloc(v)).collect();
-        for w in ids.windows(2) {
-            list.nodes[w[0]].next = w[1];
-        }
-        let (first, last) = (ids[0], ids[ids.len() - 1]);
+        let (first, last) = Self::chain(list, vals);
         if list.is_empty() {
-            list.nodes[last].next = first;
+            list.link(last, first);
             list.last = last;
             self.prev = last;
             self.current = first;
             self.next = list.nodes[first].next;
             self.ex_current_was_last = false;
         } else {
-            list.nodes[self.prev].next = first;
+            list.link(self.prev, first);
             if self.current != NIL {
-                list.nodes[last].next = self.current;
+                list.link(last, self.current);
             } else {
-                list.nodes[last].next = self.next;
+                list.link(last, self.next);
                 if self.ex_current_was_last {
                     list.last = last;
                 }
@@ -470,8 +524,9 @@ impl Iter {
             list.last = self.prev;
         } else {
             let n = list.alloc(val);
-            list.nodes[n].next = list.nodes[list.last].next;
-            list.nodes[list.last].next = n;
+            let first = list.nodes[list.last].next;
+            list.link(n, first);
+            list.link(list.last, n);
             list.last = n;
         }
     }
@@ -517,5 +572,20 @@ mod tests {
         it.add_to_end(&mut l, 5);
         it.add_after_then_move(&mut l, 6);
         assert_eq!(l.to_vec(), vec![4, 6, 5]);
+        let mut it = Iter::new(&l);
+        it.add_list_before(&mut l, &[7, 8]);
+        it.forward(&l);
+        it.extract(&mut l);
+        it.add_list_after(&mut l, &[1, 2]);
+        let fwd = l.to_vec();
+        assert_eq!(fwd, vec![7, 1, 2, 4, 6, 5]);
+        let mut it = Iter::new(&l);
+        it.move_to_last2(&l);
+        let mut back = vec![it.data(&l)];
+        for _ in 1..fwd.len() {
+            back.push(it.backward(&l).unwrap());
+        }
+        back.reverse();
+        assert_eq!(back, fwd);
     }
 }

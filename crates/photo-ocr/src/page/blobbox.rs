@@ -85,6 +85,7 @@ pub struct BlobNBox {
     pub horz_stroke_width: f32,
     pub vert_stroke_width: f32,
     pub area_stroke_width: f32,
+    pub deleted: bool,
 }
 
 impl BlobNBox {
@@ -122,14 +123,128 @@ impl BlobNBox {
             horz_stroke_width: 0.0,
             vert_stroke_width: 0.0,
             area_stroke_width: 0.0,
+            deleted: false,
             cblob: None,
         };
-        let perimeter = cblob.perimeter();
-        if area > 0 && perimeter != 0 {
-            b.area_stroke_width = 2.0 * area as f32 / perimeter as f32;
-        }
         b.cblob = Some(cblob);
         b
+    }
+
+    /// `BLOBNBOX::ReInit`.
+    pub fn re_init(&mut self) {
+        self.joined = false;
+        self.reduced = false;
+        self.repeated_set = 0;
+        self.left_tab_type = TabType::None;
+        self.right_tab_type = TabType::None;
+        self.region_type = RegionType::Unknown;
+        self.flow = FlowType::None;
+        self.spt_type = SpecialText::Skip;
+        self.left_rule = 0;
+        self.right_rule = 0;
+        self.left_crossing_rule = 0;
+        self.right_crossing_rule = 0;
+        if self.area_stroke_width == 0.0
+            && self.area > 0
+            && let Some(c) = &self.cblob
+        {
+            let perimeter = c.perimeter();
+            if perimeter != 0 {
+                self.area_stroke_width = 2.0 * self.area as f32 / perimeter as f32;
+            }
+        }
+        self.owner = None;
+        self.base_char_top = self.bbox.top;
+        self.base_char_bottom = self.bbox.bottom;
+        self.baseline_y = self.bbox.bottom;
+        self.line_crossings = 0;
+        self.base_char_blob = None;
+        self.horz_possible = false;
+        self.vert_possible = false;
+        self.leader_on_left = false;
+        self.leader_on_right = false;
+        self.clear_neighbours();
+    }
+
+    pub fn clear_neighbours(&mut self) {
+        self.neighbours = [None; 4];
+        self.good_stroke_neighbours = [false; 4];
+    }
+
+    pub fn is_diacritic(&self) -> bool {
+        self.base_char_top != self.bbox.top || self.base_char_bottom != self.bbox.bottom
+    }
+
+    pub fn set_diacritic_box(&mut self, b: &TBox) {
+        self.base_char_top = b.top;
+        self.base_char_bottom = b.bottom;
+    }
+
+    pub fn set_bounding_box(&mut self, b: TBox) {
+        self.bbox = b;
+        self.base_char_top = b.top;
+        self.base_char_bottom = b.bottom;
+    }
+
+    pub fn compute_bounding_box(&mut self) {
+        if let Some(c) = &self.cblob {
+            self.bbox = c.bounding_box();
+        }
+        self.base_char_top = self.bbox.top;
+        self.base_char_bottom = self.bbox.bottom;
+        self.baseline_y = self.bbox.bottom;
+    }
+
+    pub fn uniquely_vertical(&self) -> bool {
+        self.vert_possible && !self.horz_possible
+    }
+
+    pub fn uniquely_horizontal(&self) -> bool {
+        self.horz_possible && !self.vert_possible
+    }
+
+    pub fn set_neighbour(&mut self, dir: usize, n: Option<BlobId>, good: bool) {
+        self.neighbours[dir] = n;
+        self.good_stroke_neighbours[dir] = good;
+    }
+
+    pub fn good_text_blob(&self) -> i32 {
+        self.good_stroke_neighbours.iter().filter(|&&g| g).count() as i32
+    }
+
+    pub fn deletable_noise(&self) -> bool {
+        self.owner.is_none() && self.region_type == RegionType::Noise
+    }
+
+    /// `ConfirmNoTabViolation`.
+    pub fn confirm_no_tab_violation(&self, o: &BlobNBox) -> bool {
+        let (b, ob) = (self.bbox, o.bbox);
+        !((b.left < ob.left && b.left < o.left_rule)
+            || (ob.left < b.left && ob.left < self.left_rule)
+            || (b.right > ob.right && b.right > o.right_rule)
+            || (ob.right > b.right && ob.right > self.right_rule))
+    }
+
+    /// `MatchingStrokeWidth`.
+    pub fn matching_stroke_width(
+        &self,
+        o: &BlobNBox,
+        fractional_tolerance: f64,
+        constant_tolerance: f64,
+    ) -> bool {
+        let p_width = f64::from(self.area_stroke_width);
+        let n_p_width = f64::from(o.area_stroke_width);
+        let h_tolerance =
+            (f64::from(self.horz_stroke_width) * fractional_tolerance + constant_tolerance) as f32;
+        let v_tolerance =
+            (f64::from(self.vert_stroke_width) * fractional_tolerance + constant_tolerance) as f32;
+        let p_tolerance = p_width * fractional_tolerance + constant_tolerance;
+        let h_zero = self.horz_stroke_width == 0.0 || o.horz_stroke_width == 0.0;
+        let v_zero = self.vert_stroke_width == 0.0 || o.vert_stroke_width == 0.0;
+        let h_ok = !h_zero && (self.horz_stroke_width - o.horz_stroke_width).abs() <= h_tolerance;
+        let v_ok = !v_zero && (self.vert_stroke_width - o.vert_stroke_width).abs() <= v_tolerance;
+        let p_ok = h_zero && v_zero && (p_width - n_p_width).abs() <= p_tolerance;
+        p_ok || ((v_ok || h_ok) && (h_ok || h_zero) && (v_ok || v_zero))
     }
 
     pub fn enclosed_area(&self) -> i32 {
@@ -156,7 +271,77 @@ impl Blobs {
     pub fn get_mut(&mut self, id: BlobId) -> &mut BlobNBox {
         &mut self.boxes[id as usize]
     }
+
+    /// `delete blob`: the box is dropped from the page.
+    pub fn delete(&mut self, id: BlobId) {
+        let b = &mut self.boxes[id as usize];
+        b.cblob = None;
+        b.deleted = true;
+    }
+
+    /// `NeighbourGaps`.
+    pub fn neighbour_gaps(&self, id: BlobId) -> [i32; 4] {
+        let b = self.get(id);
+        let mut gaps = [i32::from(i16::MAX); 4];
+        for (dir, gap) in gaps.iter_mut().enumerate() {
+            if let Some(n) = b.neighbours[dir] {
+                let nb = self.get(n).bbox;
+                *gap = if dir == BND_LEFT || dir == BND_RIGHT {
+                    b.bbox.x_gap(&nb)
+                } else {
+                    b.bbox.y_gap(&nb)
+                };
+            }
+        }
+        gaps
+    }
+
+    /// `MinMaxGapsClipped`: (h_min, h_max, v_min, v_max).
+    pub fn min_max_gaps_clipped(&self, id: BlobId) -> (i32, i32, i32, i32) {
+        let b = self.get(id).bbox;
+        let max_dimension = b.width().max(b.height());
+        let gaps = self.neighbour_gaps(id);
+        let h_min = gaps[BND_LEFT].min(gaps[BND_RIGHT]);
+        let mut h_max = gaps[BND_LEFT].max(gaps[BND_RIGHT]);
+        if h_max > max_dimension && h_min < max_dimension {
+            h_max = h_min;
+        }
+        let v_min = gaps[BND_ABOVE].min(gaps[BND_BELOW]);
+        let mut v_max = gaps[BND_ABOVE].max(gaps[BND_BELOW]);
+        if v_max > max_dimension && v_min < max_dimension {
+            v_max = v_min;
+        }
+        (h_min, h_max, v_min, v_max)
+    }
+
+    /// `NoisyNeighbours`.
+    pub fn noisy_neighbours(&self, id: BlobId) -> i32 {
+        self.get(id)
+            .neighbours
+            .iter()
+            .flatten()
+            .filter(|&&n| self.get(n).region_type == RegionType::Noise)
+            .count() as i32
+    }
+
+    /// `BLOBNBOX::CleanNeighbours` for one blob.
+    pub fn clean_neighbours(&mut self, id: BlobId) {
+        for dir in 0..4 {
+            if let Some(n) = self.get(id).neighbours[dir]
+                && self.get(n).deletable_noise()
+            {
+                let b = self.get_mut(id);
+                b.neighbours[dir] = None;
+                b.good_stroke_neighbours[dir] = false;
+            }
+        }
+    }
 }
+
+pub const BND_LEFT: usize = 0;
+pub const BND_BELOW: usize = 1;
+pub const BND_RIGHT: usize = 2;
+pub const BND_ABOVE: usize = 3;
 
 /// `TO_BLOCK` (for the single page block of the automatic layout modes).
 #[derive(Debug, Default)]
@@ -170,6 +355,111 @@ pub struct ToBlock {
     pub line_spacing: f32,
     pub line_size: f32,
     pub max_blob_size: f32,
+}
+
+const MIN_MEDIUM_SIZE_RATIO: f64 = 0.25;
+const MAX_MEDIUM_SIZE_RATIO: f64 = 4.0;
+
+/// `SizeFilterBlobs`.
+fn size_filter_blobs(
+    blobs: &mut Blobs,
+    min_height: i32,
+    max_height: i32,
+    src: &mut EList<BlobId>,
+    noise: &mut EList<BlobId>,
+    small: &mut EList<BlobId>,
+    medium: &mut EList<BlobId>,
+    large: &mut EList<BlobId>,
+) {
+    // Fresh iterators each call: they start at the head of possibly
+    // non-empty lists, so additions go after the first element.
+    let mut its = [
+        Iter::new(noise),
+        Iter::new(small),
+        Iter::new(medium),
+        Iter::new(large),
+    ];
+    for b in src.take_all() {
+        let bb = blobs.get_mut(b);
+        bb.re_init();
+        let (w, h) = (bb.bbox.width(), bb.bbox.height());
+        if h < min_height && (w < min_height || w > max_height) {
+            its[0].add_after_then_move(noise, b);
+        } else if h > max_height {
+            its[3].add_after_then_move(large, b);
+        } else if h < min_height {
+            its[1].add_after_then_move(small, b);
+        } else {
+            its[2].add_after_then_move(medium, b);
+        }
+    }
+}
+
+impl ToBlock {
+    /// `TO_BLOCK::ReSetAndReFilterBlobs`.
+    pub fn re_set_and_re_filter_blobs(&mut self, blobs: &mut Blobs) {
+        let min_height =
+            super::detlinefit::int_cast_rounded(MIN_MEDIUM_SIZE_RATIO * f64::from(self.line_size));
+        let max_height =
+            super::detlinefit::int_cast_rounded(MAX_MEDIUM_SIZE_RATIO * f64::from(self.line_size));
+        let mut noise = EList::new();
+        let mut small = EList::new();
+        let mut medium = EList::new();
+        let mut large = EList::new();
+        for which in 0..4 {
+            let mut src = match which {
+                0 => std::mem::take(&mut self.blobs),
+                1 => std::mem::take(&mut self.large_blobs),
+                2 => std::mem::take(&mut self.small_blobs),
+                _ => std::mem::take(&mut self.noise_blobs),
+            };
+            size_filter_blobs(
+                blobs,
+                min_height,
+                max_height,
+                &mut src,
+                &mut noise,
+                &mut small,
+                &mut medium,
+                &mut large,
+            );
+        }
+        self.blobs = medium;
+        self.large_blobs = large;
+        self.small_blobs = small;
+        self.noise_blobs = noise;
+    }
+
+    /// `TO_BLOCK::DeleteUnownedNoise`.
+    pub fn delete_unowned_noise(&mut self, blobs: &mut Blobs) {
+        for list in [
+            &self.blobs,
+            &self.small_blobs,
+            &self.noise_blobs,
+            &self.large_blobs,
+        ] {
+            for b in list.to_vec() {
+                blobs.clean_neighbours(b);
+            }
+        }
+        for list in [
+            &mut self.blobs,
+            &mut self.small_blobs,
+            &mut self.noise_blobs,
+            &mut self.large_blobs,
+        ] {
+            let mut it = Iter::new(list);
+            it.mark_cycle_pt();
+            while !it.cycled_list(list) {
+                let b = it.data(list);
+                if blobs.get(b).deletable_noise() {
+                    it.extract(list);
+                    blobs.delete(b);
+                }
+                it.forward(list);
+            }
+        }
+    }
 }
 
 const TEXTORD_MAX_NOISE_SIZE: i32 = 7;

@@ -46,6 +46,70 @@ fn main() {
         }
     }
     std::fs::write(dir.join("04_blobs.txt"), out).unwrap();
+
+    // SetupPageSegAndDetectOrientation + AutoPageSeg (sparse text).
+    let mut tb = tb;
+    let mut resolution = 70;
+    let res = photo_ocr::page::detlinefit::int_cast_rounded(f64::from(tb.line_size) * 10.0);
+    if res > resolution && res < 2400 {
+        resolution = res;
+        eprintln!("Estimating resolution as {resolution}");
+    }
+    let mut out = String::new();
+    if tb.line_size >= 2.0 {
+        let (w, h) = (bin.width as i32, bin.height as i32);
+        let mut layout = page::layout::Layout::new(
+            tb.line_size as i32,
+            page::geom::ICoord::new(0, 0),
+            page::geom::ICoord::new(w, h),
+            resolution,
+            lines.vertical_x,
+            lines.vertical_y,
+        );
+        layout.setup_and_filter_noise(&mut blobs, &photo, &mut tb);
+        let (blocks, diacritics) = layout.find_blocks(&mut blobs, &mut tb);
+        for b in &blocks {
+            out += &format!(
+                "block {} {} {} {}\n",
+                b.bbox.left, b.bbox.bottom, b.bbox.right, b.bbox.top
+            );
+        }
+        for b in &blocks {
+            out += &format!(
+                "to_block {} {} {} {} line_size {} line_spacing {} max_blob_size {}\n",
+                b.bbox.left,
+                b.bbox.bottom,
+                b.bbox.right,
+                b.bbox.top,
+                fmt_g(f64::from(b.line_size)),
+                fmt_g(f64::from(b.line_spacing)),
+                fmt_g(f64::from(b.max_blob_size))
+            );
+            out += &format!(
+                "row min {} max {} init {}\n",
+                fmt_g(f64::from(b.row.y_min)),
+                fmt_g(f64::from(b.row.y_max)),
+                fmt_g(f64::from(b.row.initial_y_min))
+            );
+            for id in b.row.blobs.to_vec() {
+                let x = blobs.get(id);
+                out += &format!(
+                    "rblob {} {} {} {} r{} f{}\n",
+                    x.bbox.left,
+                    x.bbox.bottom,
+                    x.bbox.right,
+                    x.bbox.top,
+                    x.region_type as i32,
+                    x.flow as i32
+                );
+            }
+        }
+        for id in diacritics.to_vec() {
+            let x = blobs.get(id).bbox;
+            out += &format!("diacritic {} {} {} {}\n", x.left, x.bottom, x.right, x.top);
+        }
+    }
+    std::fs::write(dir.join("05_blocks.txt"), out).unwrap();
 }
 
 /// C's `%g`.

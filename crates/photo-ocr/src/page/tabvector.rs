@@ -2,8 +2,8 @@
 //! arena ([`TabVectors`]) and are referred to by id, as are the shared
 //! constraint lists.
 
-use super::blobbox::{BlobId, Blobs, FlowType, RegionType};
-use super::detlinefit::{DetLineFit, int_cast_rounded};
+use super::blobbox::{BlobId, Blobs, RegionType};
+use super::detlinefit::DetLineFit;
 use super::elist::{EList, Iter};
 use super::geom::ICoord;
 use super::grid::{BBGrid, GridSearch};
@@ -22,15 +22,8 @@ pub enum TabAlignment {
     Separator,
 }
 
-const GUTTER_MULTIPLE: i32 = 4;
-const GUTTER_TO_NEIGHBOUR_RATIO: i32 = 3;
 const SIMILAR_VECTOR_DIST: i32 = 10;
 const SIMILAR_RAGGED_DIST: i32 = 50;
-const MAX_FILLIN_MULTIPLE: f64 = 11.0;
-const MIN_GUTTER_FRACTION: f64 = 0.5;
-const LINE_COUNT_RECIPROCAL: f64 = 4.0;
-const MIN_ALIGNED_GUTTER: f64 = 0.25;
-const MIN_RAGGED_GUTTER: f64 = 1.5;
 const VERTICAL_GAP_FRACTION: f64 = 0.5;
 const VERTICAL_BOX_RATIO: f64 = 0.5;
 
@@ -59,26 +52,6 @@ struct TabConstraint {
     is_top: bool,
     y_min: i32,
     y_max: i32,
-}
-
-/// Tab-stop geometry queries `TabVector::Evaluate` needs from `TabFind`.
-pub trait GutterFinder {
-    fn gutter_width_and_neighbour_gap(
-        &mut self,
-        tab_x: i32,
-        mean_height: i32,
-        max_gutter: i32,
-        left: bool,
-        bbox: BlobId,
-    ) -> (i32, i32);
-    fn gutter_width(
-        &mut self,
-        bottom_y: i32,
-        top_y: i32,
-        v: &TabVector,
-        ignore_unmergeables: bool,
-        max_gutter_width: i32,
-    ) -> (i32, i32);
 }
 
 impl TabVector {
@@ -762,178 +735,6 @@ impl TabVectors {
             }
         }
         self.get_mut(this).partners = EList::new();
-    }
-
-    /// `FitAndEvaluateIfNeeded`.
-    pub fn fit_and_evaluate_if_needed(
-        &mut self,
-        blobs: &Blobs,
-        vertical: ICoord,
-        id: VecId,
-        finder: &mut impl GutterFinder,
-    ) {
-        if self.get(id).needs_refit {
-            self.get_mut(id).fit(blobs, vertical, true);
-        }
-        if self.get(id).needs_evaluation {
-            self.evaluate(blobs, vertical, id, finder);
-        }
-    }
-
-    /// `Evaluate`.
-    pub fn evaluate(
-        &mut self,
-        blobs: &Blobs,
-        vertical: ICoord,
-        id: VecId,
-        finder: &mut impl GutterFinder,
-    ) {
-        self.get_mut(id).needs_evaluation = false;
-        let length = self.get(id).endpt.y - self.get(id).startpt.y;
-        if length == 0 || self.get(id).boxes.is_empty() {
-            self.get_mut(id).percent_score = 0;
-            return;
-        }
-        let ids = self.get(id).boxes.to_vec();
-        let mut mean_height = 0;
-        for &b in &ids {
-            mean_height += blobs.get(b).bbox.height();
-        }
-        if !ids.is_empty() {
-            mean_height /= ids.len() as i32;
-        }
-        let ragged = self.get(id).is_ragged();
-        let left = self.get(id).is_left_tab();
-        let max_gutter = if ragged {
-            GUTTER_TO_NEIGHBOUR_RATIO * mean_height
-        } else {
-            GUTTER_MULTIPLE * mean_height
-        };
-        let mut gutters = Stats::new(0, max_gutter);
-        let mut num_deleted = 0;
-        let mut text_on_image = false;
-        let mut good_length = 0;
-        let mut prev_good: Option<super::geom::TBox> = None;
-        {
-            let mut list = std::mem::take(&mut self.v[id as usize].boxes);
-            let mut it = Iter::new(&list);
-            it.mark_cycle_pt();
-            while !it.cycled_list(&list) {
-                let bbox = it.data(&list);
-                let b = blobs.get(bbox).bbox;
-                let mid_y = (b.top + b.bottom) / 2;
-                let tab_x = self.v[id as usize].x_at_y(mid_y);
-                let (gutter_width, neighbour_gap) = finder.gutter_width_and_neighbour_gap(
-                    tab_x,
-                    mean_height,
-                    max_gutter,
-                    left,
-                    bbox,
-                );
-                if neighbour_gap * GUTTER_TO_NEIGHBOUR_RATIO <= gutter_width {
-                    good_length += b.top - b.bottom;
-                    gutters.add(gutter_width, 1);
-                    if let Some(p) = prev_good {
-                        let vertical_gap = b.bottom - p.top;
-                        let size1 = f64::from(p.area()).sqrt();
-                        let size2 = f64::from(b.area()).sqrt();
-                        if f64::from(vertical_gap) < MAX_FILLIN_MULTIPLE * size1.min(size2) {
-                            good_length += vertical_gap;
-                        }
-                    } else {
-                        self.v[id as usize].set_y_start(b.bottom);
-                    }
-                    prev_good = Some(b);
-                    if blobs.get(bbox).flow == FlowType::TextOnImage {
-                        text_on_image = true;
-                    }
-                } else {
-                    it.extract(&mut list);
-                    num_deleted += 1;
-                }
-                it.forward(&list);
-            }
-            self.v[id as usize].boxes = list;
-        }
-        let mut search_top = self.get(id).endpt.y;
-        let mut search_bottom = self.get(id).startpt.y;
-        let median_gutter = int_cast_rounded(gutters.median());
-        if gutters.get_total() > 0 {
-            prev_good = None;
-            let mut list = std::mem::take(&mut self.v[id as usize].boxes);
-            let mut it = Iter::new(&list);
-            it.mark_cycle_pt();
-            while !it.cycled_list(&list) {
-                let bbox = it.data(&list);
-                let b = blobs.get(bbox).bbox;
-                let mid_y = (b.top + b.bottom) / 2;
-                let tab_x = self.v[id as usize].x_at_y(mid_y);
-                let (gutter_width, _) = finder.gutter_width_and_neighbour_gap(
-                    tab_x,
-                    mean_height,
-                    max_gutter,
-                    left,
-                    bbox,
-                );
-                if f64::from(gutter_width) >= f64::from(median_gutter) * MIN_GUTTER_FRACTION {
-                    if prev_good.is_none() {
-                        self.v[id as usize].set_y_start(b.bottom);
-                        search_bottom = b.top;
-                    }
-                    prev_good = Some(b);
-                    search_top = b.bottom;
-                } else {
-                    it.extract(&mut list);
-                    num_deleted += 1;
-                }
-                it.forward(&list);
-            }
-            self.v[id as usize].boxes = list;
-        }
-        if let Some(p) = prev_good {
-            let v = self.get_mut(id);
-            v.set_y_end(p.top);
-            let length = v.endpt.y - v.startpt.y;
-            v.percent_score = 100 * good_length / length;
-            if num_deleted > 0 {
-                v.needs_refit = true;
-                self.fit_and_evaluate_if_needed(blobs, vertical, id, finder);
-                if self.get(id).boxes.is_empty() {
-                    return;
-                }
-            }
-            if search_bottom > search_top {
-                search_bottom = self.get(id).startpt.y;
-                search_top = self.get(id).endpt.y;
-            }
-            let v = self.get(id);
-            let mut min_gutter_width = LINE_COUNT_RECIPROCAL / v.boxes.len() as f64;
-            min_gutter_width += if v.is_ragged() {
-                MIN_RAGGED_GUTTER
-            } else {
-                MIN_ALIGNED_GUTTER
-            };
-            min_gutter_width *= f64::from(mean_height);
-            let mut max_gutter_width = int_cast_rounded(min_gutter_width) + 1;
-            if median_gutter > max_gutter_width {
-                max_gutter_width = median_gutter;
-            }
-            let snapshot = v.clone();
-            let (gutter_width, _required_shift) = finder.gutter_width(
-                search_bottom,
-                search_top,
-                &snapshot,
-                text_on_image,
-                max_gutter_width,
-            );
-            if f64::from(gutter_width) < min_gutter_width {
-                let v = self.get_mut(id);
-                v.boxes = EList::new();
-                v.percent_score = 0;
-            }
-        } else {
-            self.get_mut(id).percent_score = 0;
-        }
     }
 
     /// `VerticalTextlinePartner`.
