@@ -9,6 +9,7 @@
 mod beam;
 mod dict;
 mod lstm;
+pub mod page;
 pub mod pix;
 mod reader;
 mod tessdata;
