@@ -400,8 +400,9 @@ impl Bitmap {
         (boxes, pixes)
     }
 
-    /// `pixDistanceFunction(pix, 4, 8, L_BOUNDARY_BG)` → max value.
-    pub fn max_distance_4(&self) -> i32 {
+    /// `pixDistanceFunction(pix, 4, 8, L_BOUNDARY_BG)`: one byte per pixel,
+    /// row-major without padding.
+    pub fn distance_4(&self) -> Vec<u8> {
         let (w, h) = (self.width, self.height);
         let mut d: Vec<u8> = (0..w * h)
             .map(|i| u8::from(self.get(i % w, i / w)))
@@ -420,12 +421,17 @@ impl Bitmap {
                     let v = d[i * w + j];
                     if v > 0 {
                         let m = d[(i + 1) * w + j].min(d[i * w + j + 1]);
-                        d[i * w + j] = (m + 1).min(v);
+                        d[i * w + j] = (u16::from(m) + 1).min(u16::from(v)) as u8;
                     }
                 }
             }
         }
-        d.iter().copied().max().map_or(0, i32::from)
+        d
+    }
+
+    /// Maximum of [`Bitmap::distance_4`].
+    pub fn max_distance_4(&self) -> i32 {
+        self.distance_4().iter().copied().max().map_or(0, i32::from)
     }
 
     /// `pixReduceRankBinary2`.

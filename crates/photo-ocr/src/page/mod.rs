@@ -1,7 +1,15 @@
-//! Page layout analysis (port of Tesseract's `textord` for `--psm 11`).
-
+pub mod alignedblob;
 pub mod bitmap;
+pub mod blobbox;
+pub mod detlinefit;
+pub mod elist;
+pub mod geom;
+pub mod grid;
 pub mod imagefind;
 pub mod linefind;
 pub mod morph;
+pub mod outline;
+pub mod stats;
+pub mod stdalgo;
+pub mod tabvector;
 pub mod thresh;
