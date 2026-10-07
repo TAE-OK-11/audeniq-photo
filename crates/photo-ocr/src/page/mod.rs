@@ -4,6 +4,8 @@ pub mod blobbox;
 pub mod colpartition;
 pub mod detlinefit;
 pub mod elist;
+pub mod f80;
+pub mod fit;
 pub mod geom;
 pub mod grid;
 pub mod imagefind;
