@@ -105,6 +105,13 @@ impl F80 {
 
     fn plus(self, o: F80) -> F80 {
         if self.mant == 0 {
+            // IEEE: +0 + -0 is +0.
+            if o.mant == 0 {
+                return F80 {
+                    neg: self.neg && o.neg,
+                    ..F80::ZERO
+                };
+            }
             return o;
         }
         if o.mant == 0 {
@@ -140,6 +147,10 @@ impl F80 {
             if sticky {
                 // The true subtrahend is slightly larger than bm.
                 diff -= 1;
+            }
+            if diff == 0 {
+                // An exact cancellation is +0 when rounding to nearest.
+                return F80::ZERO;
             }
             F80::round(a.neg, a.exp, diff, sticky)
         }
@@ -246,6 +257,15 @@ mod tests {
         let big = F80::from_f64(2f64.powi(64));
         assert_eq!(big.add(F80::from_f64(1.0)).sub(big).to_f64(), 0.0);
         assert_eq!(big.add(F80::from_f64(3.0)).sub(big).to_f64(), 4.0);
+        let z = F80::from_f64(0.0);
+        assert!(z.sub(z).to_f64().is_sign_positive());
+        assert!(a.sub(a).to_f64().is_sign_positive());
+        assert!(
+            F80::from_f64(-0.0)
+                .add(F80::from_f64(-0.0))
+                .to_f64()
+                .is_sign_negative()
+        );
     }
 }
 

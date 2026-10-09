@@ -130,6 +130,17 @@ impl BlobNBox {
         b
     }
 
+    /// A blob made by chopping (`new BLOBNBOX` with a box and no `C_BLOB`).
+    pub fn fake(bbox: TBox) -> BlobNBox {
+        let mut b = BlobNBox::new(CBlob::default());
+        b.cblob = None;
+        b.area = 0;
+        b.bbox = bbox;
+        b.base_char_top = bbox.top;
+        b.base_char_bottom = bbox.bottom;
+        b
+    }
+
     /// `BLOBNBOX::ReInit`.
     pub fn re_init(&mut self) {
         self.joined = false;

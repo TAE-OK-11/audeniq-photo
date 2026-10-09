@@ -823,3 +823,371 @@ pub fn render_outline(blob: &CBlob) -> Bitmap {
     }
     pix
 }
+
+/// `DIR128(FCOORD)`: quantise a vector to 128ths of a circle.
+fn dir128_of(fx: f32, fy: f32) -> i32 {
+    if fy == 0.0 {
+        return if fx >= 0.0 { 0 } else { 64 };
+    }
+    let mut low = 0usize;
+    let mut high = 128usize;
+    loop {
+        let current = (high + low) / 2;
+        let (dx, dy) = (DIRTAB[current * 2] as f32, DIRTAB[current * 2 + 1] as f32);
+        if dx * fy - dy * fx >= 0.0 {
+            low = current;
+        } else {
+            high = current;
+        }
+        if high - low <= 1 {
+            break;
+        }
+    }
+    low as i32
+}
+
+#[rustfmt::skip]
+const DIRTAB: [i16; 256] = [
+    1000, 0, 998, 49, 995, 98, 989, 146, 980, 195, 970, 242, 956, 290, 941,
+    336, 923, 382, 903, 427, 881, 471, 857, 514, 831, 555, 803, 595, 773, 634,
+    740, 671, 707, 707, 671, 740, 634, 773, 595, 803, 555, 831, 514, 857, 471,
+    881, 427, 903, 382, 923, 336, 941, 290, 956, 242, 970, 195, 980, 146, 989,
+    98, 995, 49, 998, 0, 1000, -49, 998, -98, 995, -146, 989, -195, 980, -242,
+    970, -290, 956, -336, 941, -382, 923, -427, 903, -471, 881, -514, 857, -555, 831,
+    -595, 803, -634, 773, -671, 740, -707, 707, -740, 671, -773, 634, -803, 595, -831,
+    555, -857, 514, -881, 471, -903, 427, -923, 382, -941, 336, -956, 290, -970, 242,
+    -980, 195, -989, 146, -995, 98, -998, 49, -1000, 0, -998, -49, -995, -98, -989,
+    -146, -980, -195, -970, -242, -956, -290, -941, -336, -923, -382, -903, -427, -881, -471,
+    -857, -514, -831, -555, -803, -595, -773, -634, -740, -671, -707, -707, -671, -740, -634,
+    -773, -595, -803, -555, -831, -514, -857, -471, -881, -427, -903, -382, -923, -336, -941,
+    -290, -956, -242, -970, -195, -980, -146, -989, -98, -995, -49, -998, 0, -1000, 49,
+    -998, 98, -995, 146, -989, 195, -980, 242, -970, 290, -956, 336, -941, 382, -923,
+    427, -903, 471, -881, 514, -857, 555, -831, 595, -803, 634, -773, 671, -740, 707,
+    -707, 740, -671, 773, -634, 803, -595, 831, -555, 857, -514, 881, -471, 903, -427,
+    923, -382, 941, -336, 956, -290, 970, -242, 980, -195, 989, -146, 995, -98, 998,
+    -49,
+];
+
+/// `DIR128` subtraction of two chain codes (in 32nds): true for a reversal.
+fn is_reversal(a: u8, b: u8) -> bool {
+    (i32::from(a) - i32::from(b)).rem_euclid(4) == 2
+}
+
+/// `ICOORD::rotate`.
+pub fn rotate_point(p: ICoord, rot: (f32, f32)) -> ICoord {
+    let (x, y) = (p.x as f32, p.y as f32);
+    let nx = (x * rot.0 - y * rot.1 + 0.5).floor() as i16;
+    let ny = (y * rot.0 + x * rot.1 + 0.5).floor() as i16;
+    ICoord::new(i32::from(nx), i32::from(ny))
+}
+
+impl Outline {
+    /// `C_OUTLINE(srcline, rotation)`: the rotated outline, without children
+    /// and with clear flags.
+    pub fn rotated(&self, rot: (f32, f32)) -> Outline {
+        let src_n = self.steps.len();
+        let mut out = Outline::placeholder();
+        if src_n == 0 {
+            let a = rotate_point(self.bbox.botleft(), rot);
+            let b = rotate_point(self.bbox.topright(), rot);
+            out.bbox = TBox::from_corners(a, b);
+            return out;
+        }
+        let cap = src_n * 2;
+        let mut steps = vec![0u8; cap + 4];
+        let mut destindex = 0usize;
+        let mut start = ICoord::default();
+        let mut bbox = TBox::default();
+        for iteration in 0..2 {
+            let round1 = if iteration == 0 { 32 } else { 0 };
+            let round2 = if iteration != 0 { 32 } else { 0 };
+            let mut pos = self.start;
+            let mut prevpos = rotate_point(pos, rot);
+            start = prevpos;
+            bbox = TBox::from_corners(start, start);
+            destindex = 0;
+            let mut destpos = prevpos;
+            for s in 0..src_n {
+                pos += self.step(s);
+                destpos = rotate_point(pos, rot);
+                while destpos != prevpos {
+                    let d = destpos - prevpos;
+                    let dir = (dir128_of(d.x as f32, d.y as f32) + 64) % 128;
+                    if dir & 31 != 0 {
+                        steps[destindex] = (((dir + round1) % 128) >> 5) as u8;
+                        destindex += 1;
+                        prevpos += STEP[steps[destindex - 1] as usize];
+                        if destindex < 2 || !is_reversal(steps[destindex - 1], steps[destindex - 2])
+                        {
+                            steps[destindex] = (((dir + round2) % 128) >> 5) as u8;
+                            destindex += 1;
+                            prevpos += STEP[steps[destindex - 1] as usize];
+                        } else {
+                            prevpos = prevpos - STEP[steps[destindex - 1] as usize];
+                            destindex -= 1;
+                            prevpos = prevpos - STEP[steps[destindex - 1] as usize];
+                            steps[destindex - 1] = (((dir + round2) % 128) >> 5) as u8;
+                            prevpos += STEP[steps[destindex - 1] as usize];
+                        }
+                    } else {
+                        steps[destindex] = (dir >> 5) as u8;
+                        destindex += 1;
+                        prevpos += STEP[steps[destindex - 1] as usize];
+                    }
+                    while destindex >= 2 && is_reversal(steps[destindex - 1], steps[destindex - 2])
+                    {
+                        prevpos = prevpos - STEP[steps[destindex - 1] as usize];
+                        prevpos = prevpos - STEP[steps[destindex - 2] as usize];
+                        destindex -= 2;
+                    }
+                    bbox.union_with(&TBox::from_corners(destpos, destpos));
+                }
+            }
+            debug_assert!(destpos == start);
+            while destindex > 1 {
+                if !is_reversal(steps[destindex - 1], steps[0]) {
+                    break;
+                }
+                start += STEP[steps[0] as usize];
+                destindex -= 2;
+                for i in 0..destindex {
+                    steps[i] = steps[i + 1];
+                }
+            }
+            if destindex >= 4 {
+                break;
+            }
+        }
+        steps.truncate(destindex);
+        out.start = start;
+        out.steps = steps;
+        out.bbox = bbox;
+        out
+    }
+
+    /// `C_OUTLINE(startpt, DIR128* new_steps, length)` with chain codes
+    /// 0..4: removes there-and-back steps; the box keeps every visited point.
+    pub fn from_steps(startpt: ICoord, new_steps: &[u8]) -> Outline {
+        let length = new_steps.len();
+        let mut steps = vec![0u8; length];
+        let mut bbox = TBox::default();
+        let mut pos = startpt;
+        let lastdir = new_steps[length - 1];
+        let mut prevdir = lastdir;
+        let mut stepindex: isize = 0;
+        for &dir in new_steps {
+            bbox.union_with(&TBox::from_corners(pos, pos));
+            steps[stepindex as usize] = dir;
+            pos += STEP[dir as usize];
+            if is_reversal(dir, prevdir) && stepindex > 0 {
+                stepindex -= 2;
+                prevdir = if stepindex >= 0 {
+                    steps[stepindex as usize]
+                } else {
+                    lastdir
+                };
+            } else {
+                prevdir = dir;
+            }
+            stepindex += 1;
+        }
+        let mut start = startpt;
+        loop {
+            let rev = is_reversal(steps[(stepindex - 1) as usize], steps[0]);
+            if rev {
+                start += STEP[steps[0] as usize];
+                stepindex -= 2;
+                for i in 0..stepindex as usize {
+                    steps[i] = steps[i + 1];
+                }
+            }
+            if !(stepindex > 1 && rev) {
+                break;
+            }
+        }
+        steps.truncate(stepindex as usize);
+        Outline {
+            start,
+            steps,
+            bbox,
+            children: Vec::new(),
+            inverse: false,
+        }
+    }
+
+    /// `C_OUTLINE::count_transitions`.
+    pub fn count_transitions(&self, threshold: i32) -> i32 {
+        let mut pos = self.start;
+        let mut total = 0;
+        let (mut max_x, mut min_x, mut max_y, mut min_y) = (pos.x, pos.x, pos.y, pos.y);
+        let (mut lmax_x, mut lmin_x, mut lmax_y, mut lmin_y) = (true, true, true, true);
+        let (mut first_max_x, mut first_max_y) = (false, false);
+        let (mut initial_x, mut initial_y) = (pos.x, pos.y);
+        for s in 0..self.steps.len() {
+            let st = self.step(s);
+            pos += st;
+            if st.x < 0 {
+                if lmax_x && pos.x < min_x {
+                    min_x = pos.x;
+                }
+                if lmin_x && max_x - pos.x > threshold {
+                    if lmax_x {
+                        initial_x = max_x;
+                        first_max_x = false;
+                    }
+                    total += 1;
+                    lmax_x = true;
+                    lmin_x = false;
+                    min_x = pos.x;
+                }
+            } else if st.x > 0 {
+                if lmin_x && pos.x > max_x {
+                    max_x = pos.x;
+                }
+                if lmax_x && pos.x - min_x > threshold {
+                    if lmin_x {
+                        initial_x = min_x;
+                        first_max_x = true;
+                    }
+                    total += 1;
+                    lmax_x = false;
+                    lmin_x = true;
+                    max_x = pos.x;
+                }
+            } else if st.y < 0 {
+                if lmax_y && pos.y < min_y {
+                    min_y = pos.y;
+                }
+                if lmin_y && max_y - pos.y > threshold {
+                    if lmax_y {
+                        initial_y = max_y;
+                        first_max_y = false;
+                    }
+                    total += 1;
+                    lmax_y = true;
+                    lmin_y = false;
+                    min_y = pos.y;
+                }
+            } else {
+                if lmin_y && pos.y > max_y {
+                    max_y = pos.y;
+                }
+                if lmax_y && pos.y - min_y > threshold {
+                    if lmin_y {
+                        initial_y = min_y;
+                        first_max_y = true;
+                    }
+                    total += 1;
+                    lmax_y = false;
+                    lmin_y = true;
+                    max_y = pos.y;
+                }
+            }
+        }
+        if first_max_x && lmin_x {
+            total += if max_x - initial_x > threshold { 1 } else { -1 };
+        } else if !first_max_x && lmax_x {
+            total += if initial_x - min_x > threshold { 1 } else { -1 };
+        }
+        if first_max_y && lmin_y {
+            total += if max_y - initial_y > threshold { 1 } else { -1 };
+        } else if !first_max_y && lmax_y {
+            total += if initial_y - min_y > threshold { 1 } else { -1 };
+        }
+        total
+    }
+
+    /// `C_OUTLINE::RemoveSmallRecursive` applied to a list.
+    pub fn remove_small(list: &mut Vec<Outline>, min_size: i32) {
+        list.retain_mut(|o| {
+            if o.bbox.width() < min_size || o.bbox.height() < min_size {
+                false
+            } else {
+                Outline::remove_small(&mut o.children, min_size);
+                true
+            }
+        });
+    }
+
+    /// `RotateOutlineList` for one outline (children rotated recursively).
+    pub fn rotated_tree(&self, rot: (f32, f32)) -> Outline {
+        let mut o = self.rotated(rot);
+        o.children = self.children.iter().map(|c| c.rotated_tree(rot)).collect();
+        o
+    }
+}
+
+impl CBlob {
+    /// `C_BLOB::EstimateBaselinePosition`.
+    pub fn estimate_baseline_position(&self) -> i32 {
+        let bbox = self.bounding_box();
+        let (left, width, bottom) = (bbox.left, bbox.width(), bbox.bottom);
+        if self.outlines.is_empty() || f64::from(self.perimeter()) > f64::from(width) * 8.0 {
+            return bottom;
+        }
+        let mut y_mins = vec![bbox.top; (width + 1) as usize];
+        for o in &self.outlines {
+            let mut pos = o.start;
+            for s in 0..o.steps.len() {
+                let i = (pos.x - left) as usize;
+                if pos.y < y_mins[i] {
+                    y_mins[i] = pos.y;
+                }
+                pos += o.step(s);
+            }
+        }
+        let bottom_extent = y_mins
+            .iter()
+            .filter(|&&y| y == bottom || y == bottom + 1)
+            .count() as i32;
+        let mut best_min = bbox.top;
+        let mut prev_run = 0;
+        let mut prev_y = bbox.top;
+        let mut prev_prev_y = bbox.top;
+        let mut x = 0;
+        while x < width {
+            let y_at_x = y_mins[x as usize];
+            let mut run = 1;
+            while x + run <= width && y_mins[(x + run) as usize] == y_at_x {
+                run += 1;
+            }
+            if y_at_x > bottom + 1 {
+                let mut total_run = run;
+                while x + total_run <= width
+                    && (y_mins[(x + total_run) as usize] == y_at_x
+                        || y_mins[(x + total_run) as usize] == y_at_x + 1)
+                {
+                    total_run += 1;
+                }
+                if prev_prev_y > y_at_x + 1
+                    || x + total_run > width
+                    || y_mins[(x + total_run) as usize] > y_at_x + 1
+                {
+                    if prev_run > 0 && prev_y == y_at_x + 1 {
+                        total_run += prev_run;
+                    }
+                    if total_run > bottom_extent && y_at_x < best_min {
+                        best_min = y_at_x;
+                    }
+                }
+            }
+            prev_run = run;
+            prev_prev_y = prev_y;
+            prev_y = y_at_x;
+            x += prev_run;
+        }
+        if best_min == bbox.top {
+            bottom
+        } else {
+            best_min
+        }
+    }
+
+    /// `C_BLOB::count_transitions` (top level outlines only).
+    pub fn count_transitions(&self, threshold: i32) -> i32 {
+        self.outlines
+            .iter()
+            .map(|o| o.count_transitions(threshold))
+            .sum()
+    }
+}

@@ -56,6 +56,7 @@ fn main() {
         eprintln!("Estimating resolution as {resolution}");
     }
     let mut out = String::new();
+    let mut text_blocks = Vec::new();
     if tb.line_size >= 2.0 {
         let (w, h) = (bin.width as i32, bin.height as i32);
         let mut layout = page::layout::Layout::new(
@@ -108,8 +109,96 @@ fn main() {
             let x = blobs.get(id).bbox;
             out += &format!("diacritic {} {} {} {}\n", x.left, x.bottom, x.right, x.top);
         }
+        text_blocks = page::tordmain::textord_page(blocks, &diacritics, &mut blobs);
     }
     std::fs::write(dir.join("05_blocks.txt"), out).unwrap();
+    let mut out = String::new();
+    for b in &text_blocks {
+        out += &format!(
+            "block {} {} {} {} xh {}\n",
+            b.bbox.left, b.bbox.bottom, b.bbox.right, b.bbox.top, b.xheight
+        );
+        for r in &b.rows {
+            let rb = r.bound_box;
+            out += &format!(
+                "row {} {} {} {} xh {} asc {} desc {} kern {} sp {} body {}\n",
+                rb.left,
+                rb.bottom,
+                rb.right,
+                rb.top,
+                gp(f64::from(r.xheight), 9),
+                gp(f64::from(r.ascrise), 9),
+                gp(f64::from(r.descdrop), 9),
+                r.kerning,
+                r.spacing,
+                gp(f64::from(r.bodysize), 9)
+            );
+            let bl = &r.baseline;
+            out += &format!("spline {}", bl.quads.len());
+            for x in &bl.xcoords {
+                out += &format!(" x{x}");
+            }
+            for q in &bl.quads {
+                out += &format!(
+                    " q({},{},{})",
+                    gp(q.a, 17),
+                    gp(f64::from(q.b), 9),
+                    gp(f64::from(q.c), 9)
+                );
+            }
+            out += "\n";
+            for w in &r.words {
+                let wb = w.bounding_box();
+                out += &format!(
+                    "word {} {} {} {} blanks {} flags {:x}\n",
+                    wb.left,
+                    wb.bottom,
+                    wb.right,
+                    wb.top,
+                    w.blanks,
+                    w.flags & 0xffff
+                );
+                for c in &w.cblobs {
+                    let cb = c.bounding_box();
+                    out += &format!("cb {} {} {} {}\n", cb.left, cb.bottom, cb.right, cb.top);
+                }
+                for c in &w.rej_cblobs {
+                    let cb = c.bounding_box();
+                    out += &format!("rej {} {} {} {}\n", cb.left, cb.bottom, cb.right, cb.top);
+                }
+            }
+        }
+    }
+    std::fs::write(dir.join("06_rows.txt"), out).unwrap();
+}
+
+/// C's `%.{prec}g`.
+fn gp(v: f64, prec: usize) -> String {
+    if v == 0.0 {
+        return if v.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
+    }
+    let s = format!("{:.*e}", prec - 1, v);
+    let (m, e) = s.split_once('e').unwrap();
+    let e: i32 = e.parse().unwrap();
+    if e < -4 || e >= prec as i32 {
+        let m = if m.contains('.') {
+            m.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            m
+        };
+        return format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs());
+    }
+    let decimals = (prec as i32 - 1 - e).max(0) as usize;
+    let s = format!("{:.*}", decimals, v);
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 
 /// C's `%g`.
