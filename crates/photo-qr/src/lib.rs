@@ -4,7 +4,8 @@
 //!
 //! Only *successfully decoded* symbols are counted, matching how the
 //! backend used `zbarimg`. Payloads are validated but never returned.
-#![forbid(unsafe_code)]
+// Only the calls into the AVX2 builds of the pixel loops are `unsafe`.
+#![deny(unsafe_code)]
 
 mod decode;
 mod identify;

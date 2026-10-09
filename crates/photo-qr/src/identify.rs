@@ -71,6 +71,8 @@ pub(crate) struct Quirc {
     px: Vec<u16>,
     regions: Vec<Region>,
     caps: Vec<Capstone>,
+    /// Scratch: one row as 64-pixel dark bitmasks.
+    masks: Vec<u64>,
     pub grids: Vec<Grid>,
 }
 
@@ -226,6 +228,109 @@ impl Spans for Leftmost {
     }
 }
 
+photo_core::multiversion! {
+    /// One row as bitmasks of 64 pixels (bit set = not white).
+    fn dark_masks(row: &[u16], out: &mut Vec<u64>) -> () = dark_masks_body;
+}
+
+#[inline(always)]
+fn dark_masks_body(row: &[u16], out: &mut Vec<u64>) {
+    out.clear();
+    out.extend(row.chunks(64).map(|c| {
+        let mut m = 0u64;
+        for (i, &p) in c.iter().enumerate() {
+            m |= u64::from(p != WHITE) << i;
+        }
+        m
+    }));
+}
+
+photo_core::multiversion! {
+    /// quirc's adaptive threshold: a boustrophedon exponential moving
+    /// average (window `w / 8`) in both directions; a pixel is dark when it
+    /// is below 95% of the mean of the two averages. quirc floors each
+    /// average step to an integer, a serial integer division per pixel;
+    /// here the averages are exact (f64), which moves the threshold by
+    /// well under one gray level and runs several times faster.
+    fn threshold(px: &mut [u16], gray: &[u8], w: usize, h: usize) -> () = threshold_body;
+}
+
+#[inline(always)]
+fn threshold_body(px: &mut [u16], gray: &[u8], w: usize, h: usize) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let s = (w / 8).max(1) as f64;
+    let a = (s - 1.0) / s;
+    let (a2, a3, a4) = (a * a, a * a * a, a * a * a * a);
+    let (mut avg_w, mut avg_u) = (0f64, 0f64);
+    let mut fwd_avg = vec![0f64; w];
+    let mut bwd_avg = vec![0f64; w];
+    // dark  <=>  gray < (avg_w + avg_u) * 95 / (200 s)
+    let k = 95.0 / (200.0 * s);
+    // The averages are linear recurrences, y' = a*y + x; four steps at
+    // once keep the serial chain at one multiply-add per four pixels.
+    let step4 = |y: f64, x: [f64; 4], out: &mut [f64]| -> f64 {
+        let p1 = x[0];
+        let p2 = a * x[0] + x[1];
+        let p3 = a * p2 + x[2];
+        let p4 = a * p3 + x[3];
+        out[0] = a * y + p1;
+        out[1] = a2 * y + p2;
+        out[2] = a3 * y + p3;
+        out[3] = a4 * y + p4;
+        out[3]
+    };
+    let n4 = w / 4 * 4;
+    for y in 0..h {
+        let row = &gray[y * w..(y + 1) * w];
+        // Left-to-right average: avg_u on even rows, avg_w on odd rows;
+        // the other runs right to left (quirc's boustrophedon).
+        let (mut f, mut b) = if y & 1 == 1 {
+            (avg_w, avg_u)
+        } else {
+            (avg_u, avg_w)
+        };
+        let g = |i: usize| f64::from(row[i]);
+        let mut x = 0;
+        while x < n4 {
+            let r = w - 4 - x;
+            f = step4(
+                f,
+                [g(x), g(x + 1), g(x + 2), g(x + 3)],
+                &mut fwd_avg[x..x + 4],
+            );
+            let mut tmp = [0f64; 4];
+            b = step4(b, [g(r + 3), g(r + 2), g(r + 1), g(r)], &mut tmp);
+            bwd_avg[r..r + 4].copy_from_slice(&[tmp[3], tmp[2], tmp[1], tmp[0]]);
+            x += 4;
+        }
+        // Remaining (w % 4) pixels: forward ends at the right edge, the
+        // backward pass at the left edge.
+        for x in n4..w {
+            f = a * f + g(x);
+            fwd_avg[x] = f;
+        }
+        for x in (0..w - n4).rev() {
+            b = a * b + g(x);
+            bwd_avg[x] = b;
+        }
+        if y & 1 == 1 {
+            (avg_w, avg_u) = (f, b);
+        } else {
+            (avg_u, avg_w) = (f, b);
+        }
+        let out = &mut px[y * w..(y + 1) * w];
+        for x in 0..w {
+            out[x] = if g(x) < (fwd_avg[x] + bwd_avg[x]) * k {
+                BLACK
+            } else {
+                WHITE
+            };
+        }
+    }
+}
+
 impl Quirc {
     pub fn new(gray: &[u8], w: usize, h: usize) -> Quirc {
         let mut q = Quirc {
@@ -234,57 +339,11 @@ impl Quirc {
             px: vec![WHITE; w * h],
             regions: Vec::new(),
             caps: Vec::new(),
+            masks: Vec::new(),
             grids: Vec::new(),
         };
-        q.threshold(gray);
+        threshold(&mut q.px, gray, w, h);
         q
-    }
-
-    /// quirc's adaptive threshold (boustrophedon moving average). The
-    /// per-pixel divisions by the window size use an exact reciprocal.
-    fn threshold(&mut self, gray: &[u8]) {
-        let (w, h) = (self.w, self.h);
-        if w == 0 || h == 0 {
-            return;
-        }
-        let s = (w / 8).max(1) as u64;
-        // floor(x / s) for the running averages (x < 2^40): multiply-high
-        // with one correction step.
-        let m = u64::MAX / s + 1;
-        let div = |x: u64| -> u64 {
-            let mut q = ((u128::from(x) * u128::from(m)) >> 64) as u64;
-            if q * s > x {
-                q -= 1;
-            } else if (q + 1) * s <= x {
-                q += 1;
-            }
-            q
-        };
-        let (mut avg_w, mut avg_u) = (0u64, 0u64);
-        let mut row_avg = vec![0u64; w];
-        let denom = 200 * s;
-        for y in 0..h {
-            row_avg.iter_mut().for_each(|v| *v = 0);
-            let row = &gray[y * w..(y + 1) * w];
-            for x in 0..w {
-                let (wi, ui) = if y & 1 == 1 {
-                    (x, w - 1 - x)
-                } else {
-                    (w - 1 - x, x)
-                };
-                avg_w = div(avg_w * (s - 1)) + u64::from(row[wi]);
-                avg_u = div(avg_u * (s - 1)) + u64::from(row[ui]);
-                row_avg[wi] += avg_w;
-                row_avg[ui] += avg_u;
-            }
-            let out = &mut self.px[y * w..(y + 1) * w];
-            for x in 0..w {
-                // row[x] < avg * 95 / (200 s)  <=>  row[x] * 200 s < avg * 95
-                // up to floor rounding; compare exactly via the quotient.
-                let t = row_avg[x] * 95 / denom;
-                out[x] = if u64::from(row[x]) < t { BLACK } else { WHITE };
-            }
-        }
     }
 
     fn fill<S: Spans>(&mut self, x: i32, y: i32, from: u16, to: u16, spans: &mut S) {
@@ -420,18 +479,36 @@ impl Quirc {
 
     fn finder_scan(&mut self, y: usize) {
         let w = self.w;
-        let mut last = false;
-        let mut run = 0i32;
+        let mut last_x = 0usize; // start of the current run
         let mut runs = 0;
         let mut pb = [0i32; 5];
-        for x in 0..w {
-            let color = self.px[y * w + x] != WHITE;
-            if x > 0 && color != last {
+        // Colour changes are found 64 pixels at a time from a bitmask
+        // (bit set = dark), so the loop body runs per run, not per pixel.
+        let mut prev_dark = false;
+        let mut base = 0;
+        dark_masks(&self.px[y * w..(y + 1) * w], &mut self.masks);
+        while base < w {
+            let n = (w - base).min(64);
+            let dark = self.masks[base / 64];
+            // Bit i set: pixel base+i differs from the pixel before it.
+            let mut changes = dark ^ ((dark << 1) | u64::from(prev_dark));
+            if base == 0 {
+                changes &= !1; // x == 0 starts the first run
+            }
+            if n < 64 {
+                changes &= (1u64 << n) - 1;
+            }
+            prev_dark = dark >> (n - 1) & 1 == 1;
+            while changes != 0 {
+                let i = changes.trailing_zeros() as usize;
+                changes &= changes - 1;
+                let x = base + i;
                 pb.copy_within(1..5, 0);
-                pb[4] = run;
-                run = 0;
+                pb[4] = (x - last_x) as i32;
+                last_x = x;
                 runs += 1;
-                if !color && runs >= 5 {
+                // A run of dark pixels just ended (pixel x is light).
+                if dark >> i & 1 == 0 && runs >= 5 {
                     let check = [1, 1, 3, 1, 1];
                     let avg = (pb[0] + pb[1] + pb[3] + pb[4]) / 4;
                     let err = avg * 3 / 4;
@@ -442,8 +519,7 @@ impl Quirc {
                     }
                 }
             }
-            run += 1;
-            last = color;
+            base += n;
         }
     }
 

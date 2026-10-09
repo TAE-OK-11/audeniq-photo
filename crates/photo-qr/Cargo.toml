@@ -9,8 +9,14 @@ license.workspace = true
 [dependencies]
 photo-core.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+needless_range_loop = "allow"
+chunks_exact_to_as_chunks = "allow"
+too_many_arguments = "allow"
 
 [dev-dependencies]
 photo-png.workspace = true
