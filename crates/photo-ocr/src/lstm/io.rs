@@ -166,6 +166,23 @@ pub(crate) fn round_f32(x: f32) -> i32 {
     }
 }
 
+photo_core::multiversion! {
+    /// `round_f32(x * 127)` clamped to int8, over a slice.
+    fn quantize(dst: &mut [i8], src: &[f32]) -> () = quantize_body;
+}
+
+#[inline(always)]
+fn quantize_body(dst: &mut [i8], src: &[f32]) {
+    for (d, &x) in dst.iter_mut().zip(src) {
+        // round_f32 without the branch: identical for every input
+        // (NaN and -0.0 give 0; huge values saturate, then clamp).
+        let x = x * 127.0;
+        let m = (x.abs() + 0.5) as i32;
+        let r = if x >= 0.0 { m } else { -m };
+        *d = r.clamp(-127, 127) as i8;
+    }
+}
+
 impl NetIo {
     pub(crate) fn resize_to_map(&mut self, int_mode: bool, map: StrideMap, nf: usize) {
         let n = map.width() * nf;
@@ -244,9 +261,7 @@ impl NetIo {
     pub(crate) fn write_step_part(&mut self, t: usize, off: usize, input: &[f32]) {
         let base = t * self.nf + off;
         if self.int_mode {
-            for (d, &x) in self.i[base..base + input.len()].iter_mut().zip(input) {
-                *d = round_f32(x * 127.0).clamp(-127, 127) as i8;
-            }
+            quantize(&mut self.i[base..base + input.len()], input);
         } else {
             self.f[base..base + input.len()].copy_from_slice(input);
         }

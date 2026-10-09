@@ -68,35 +68,87 @@ const TYPE_NAMES: [&str; 27] = [
     "TensorFlow",
 ];
 
-/// Tesseract `Tanh()` (table interpolation, `TFloat = float`).
+/// Tesseract `Tanh()` (table interpolation, `TFloat = float`), written
+/// branch-free (odd symmetry by sign select) so slices of it vectorize;
+/// results are bit-identical to the recursive original.
+#[inline(always)]
 pub(crate) fn tanh(x: f32) -> f32 {
-    if x < 0.0 {
-        return -tanh(-x);
-    }
-    let x = x * 256.0;
-    let index = x as u32;
-    if index >= 4095 {
-        return 1.0;
-    }
-    let (t0, t1) = (TANH_TABLE[index as usize], TANH_TABLE[index as usize + 1]);
-    t0 + (t1 - t0) * (x - index as f32)
+    let y = x.abs() * 256.0;
+    let index = y as u32;
+    let i = index.min(4094) as usize;
+    let (t0, t1) = (TANH_TABLE[i], TANH_TABLE[i + 1]);
+    let r = if index >= 4095 {
+        1.0
+    } else {
+        t0 + (t1 - t0) * (y - index as f32)
+    };
+    if x < 0.0 { -r } else { r }
 }
 
-/// Tesseract `Logistic()`.
+/// Tesseract `Logistic()` (`1 - Logistic(-x)` for negative x), branch-free.
+#[inline(always)]
 pub(crate) fn logistic(x: f32) -> f32 {
-    if x < 0.0 {
-        return 1.0 - logistic(-x);
+    let y = x.abs() * 256.0;
+    let index = y as u32;
+    let i = index.min(4094) as usize;
+    let (l0, l1) = (LOGISTIC_TABLE[i], LOGISTIC_TABLE[i + 1]);
+    let r = if index >= 4095 {
+        1.0
+    } else {
+        l0 + (l1 - l0) * (y - index as f32)
+    };
+    if x < 0.0 { 1.0 - r } else { r }
+}
+
+photo_core::multiversion! {
+    fn tanh_slice(v: &mut [f32]) -> () = tanh_slice_body;
+}
+
+#[inline(always)]
+fn tanh_slice_body(v: &mut [f32]) {
+    v.iter_mut().for_each(|x| *x = tanh(*x));
+}
+
+photo_core::multiversion! {
+    fn logistic_slice(v: &mut [f32]) -> () = logistic_slice_body;
+}
+
+#[inline(always)]
+fn logistic_slice_body(v: &mut [f32]) {
+    v.iter_mut().for_each(|x| *x = logistic(*x));
+}
+
+photo_core::multiversion! {
+    /// One LSTM cell update from the four gate pre-activations
+    /// (CI=0, GI=1, GF1=2, GO=3), in Tesseract's operation order.
+    fn lstm_cell(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f32]) -> () = lstm_cell_body;
+}
+
+#[inline(always)]
+fn lstm_cell_body(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f32]) {
+    tanh_slice_body(&mut lines[0]);
+    for line in &mut lines[1..] {
+        logistic_slice_body(line);
     }
-    let x = x * 256.0;
-    let index = x as u32;
-    if index >= 4095 {
-        return 1.0;
-    }
-    let (l0, l1) = (
-        LOGISTIC_TABLE[index as usize],
-        LOGISTIC_TABLE[index as usize + 1],
+    let ns = state.len();
+    let (ci, gi, gf, go) = (
+        &lines[0][..ns],
+        &lines[1][..ns],
+        &lines[2][..ns],
+        &lines[3][..ns],
     );
-    l0 + (l1 - l0) * (x - index as f32)
+    for i in 0..ns {
+        state[i] *= gf[i];
+    }
+    for i in 0..ns {
+        state[i] += ci[i] * gi[i];
+    }
+    for s in state.iter_mut() {
+        *s = s.clamp(-STATE_CLIP, STATE_CLIP);
+    }
+    for i in 0..ns {
+        output[i] = tanh(state[i]) * go[i];
+    }
 }
 
 fn softmax_in_place(v: &mut [f32]) {
@@ -127,7 +179,11 @@ pub(crate) enum Weights {
     Int {
         rows: usize,
         cols: usize,
-        w: Vec<i8>,
+        /// Rows in blocks of eight, column pairs interleaved (see
+        /// [`shape_int`]), so eight row sums accumulate side by side.
+        shaped: Vec<i8>,
+        /// Bias column times 127, per row.
+        bias: Vec<i32>,
         scales: Vec<f32>,
     },
     Float {
@@ -159,10 +215,12 @@ impl Weights {
             for _ in 0..n {
                 scales.push((r.f64()? / 127.0) as f32);
             }
+            let (shaped, bias) = shape_int(rows, cols, &w);
             Ok(Weights::Int {
                 rows,
                 cols,
-                w,
+                shaped,
+                bias,
                 scales,
             })
         } else {
@@ -187,13 +245,14 @@ impl Weights {
         let Weights::Int {
             rows,
             cols,
-            w,
+            shaped,
+            bias,
             scales,
         } = self
         else {
             unreachable!("int input to float weights")
         };
-        simd::dot_int_rows(*rows, *cols, w, scales, u, v);
+        simd::dot_int_rows(*rows, *cols - 1, shaped, bias, scales, u, v);
     }
 
     fn dot_float(&self, u: &[f32], v: &mut [f32]) {
@@ -221,26 +280,74 @@ impl Weights {
     }
 }
 
-/// `MatrixDotVector` rows over int8 inputs: exact integer sums, then one
-/// float multiply per row. Compiled once generically and once with AVX2.
+/// Reorder int8 weights (`rows x cols`, last column the bias) for the
+/// kernel: rows in blocks of eight (the last block zero-padded) and, per
+/// block, column pairs `k` stored as `[r0c2k, r0c2k+1, r1c2k, ...]`
+/// (16 bytes; an odd last column is paired with a zero). As Tesseract's
+/// `IntSimdMatrix` shaping: the kernel then accumulates eight rows in eight
+/// lanes and never reduces horizontally.
+fn shape_int(rows: usize, cols: usize, w: &[i8]) -> (Vec<i8>, Vec<i32>) {
+    let ni = cols.saturating_sub(1);
+    let npairs = ni.div_ceil(2);
+    let blocks = rows.div_ceil(8);
+    let mut shaped = vec![0i8; blocks * npairs * 16];
+    for row in 0..rows {
+        let (blk, r) = (row / 8, row % 8);
+        for col in 0..ni {
+            let (k, e) = (col / 2, col % 2);
+            shaped[(blk * npairs + k) * 16 + 2 * r + e] = w[row * cols + col];
+        }
+    }
+    let bias = (0..rows)
+        .map(|row| i32::from(w[row * cols + ni]) * 127)
+        .collect();
+    (shaped, bias)
+}
+
+/// `MatrixDotVector` over int8 inputs with [`shape_int`] weights: exact
+/// integer sums, then one float multiply per row (as Tesseract's generic
+/// and SIMD kernels compute). Compiled once generically and once for AVX2.
 #[inline(always)]
 pub(crate) fn dot_int_rows_body(
     rows: usize,
-    cols: usize,
-    w: &[i8],
+    ni: usize,
+    shaped: &[i8],
+    bias: &[i32],
     scales: &[f32],
     u: &[i8],
     v: &mut [f32],
 ) {
-    let ni = cols - 1;
-    let u = &u[..ni];
-    for i in 0..rows {
-        let wi = &w[i * cols..(i + 1) * cols];
-        let mut total: i32 = 0;
-        for (&a, &b) in wi[..ni].iter().zip(u) {
-            total += i32::from(a) * i32::from(b);
+    let npairs = ni.div_ceil(2);
+    if npairs == 0 {
+        for row in 0..rows {
+            v[row] = bias[row] as f32 * scales[row];
         }
-        v[i] = (total + i32::from(wi[ni]) * 127) as f32 * scales[i];
+        return;
+    }
+    let full = ni / 2;
+    let u = &u[..ni];
+    for (blk, wb) in shaped.chunks_exact(npairs * 16).enumerate() {
+        let mut acc = [0i32; 8];
+        for k in 0..full {
+            let (u0, u1) = (i32::from(u[2 * k]), i32::from(u[2 * k + 1]));
+            let b: &[i8; 16] = wb[k * 16..k * 16 + 16].try_into().expect("16");
+            for r in 0..8 {
+                acc[r] += i32::from(b[2 * r]) * u0 + i32::from(b[2 * r + 1]) * u1;
+            }
+        }
+        if npairs > full {
+            let u0 = i32::from(u[2 * full]);
+            let b = &wb[full * 16..full * 16 + 16];
+            for r in 0..8 {
+                acc[r] += i32::from(b[2 * r]) * u0;
+            }
+        }
+        for r in 0..8 {
+            let row = blk * 8 + r;
+            if row < rows {
+                v[row] = (acc[r] + bias[row]) as f32 * scales[row];
+            }
+        }
     }
 }
 
@@ -589,8 +696,8 @@ fn forward(layer: &Layer, input: &NetIo, rand: &mut TRand) -> NetIo {
 
 fn apply(act: Act, v: &mut [f32]) {
     match act {
-        Act::Tanh => v.iter_mut().for_each(|x| *x = tanh(*x)),
-        Act::Logistic => v.iter_mut().for_each(|x| *x = logistic(*x)),
+        Act::Tanh => tanh_slice(v),
+        Act::Logistic => logistic_slice(v),
         Act::PosClip => v.iter_mut().for_each(|x| *x = x.clamp(0.0, 1.0)),
         Act::SymClip => v.iter_mut().for_each(|x| *x = x.clamp(-1.0, 1.0)),
         Act::Relu => v.iter_mut().for_each(|x| {
@@ -637,23 +744,7 @@ fn lstm_forward(
         for (g, line) in gates.iter().zip(lines.iter_mut()) {
             g.dot(&source, t, line);
         }
-        lines[0].iter_mut().for_each(|x| *x = tanh(*x));
-        for line in &mut lines[1..] {
-            line.iter_mut().for_each(|x| *x = logistic(*x));
-        }
-        // CI=0, GI=1, GF1=2, GO=3.
-        for i in 0..ns {
-            state[i] *= lines[2][i];
-        }
-        for i in 0..ns {
-            state[i] += lines[0][i] * lines[1][i];
-        }
-        for s in &mut state {
-            *s = s.clamp(-STATE_CLIP, STATE_CLIP);
-        }
-        for i in 0..ns {
-            output[i] = tanh(state[i]) * lines[3][i];
-        }
+        lstm_cell(&mut lines, &mut state, &mut output);
         if summary {
             if src.is_last(&im, WIDTH) {
                 out.write_step(dest.t(), &output);
