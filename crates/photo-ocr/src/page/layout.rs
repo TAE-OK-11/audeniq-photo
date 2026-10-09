@@ -707,7 +707,6 @@ impl Layout {
         Self::insert_blob_list(&mut self.sw, blobs, &tb.large_blobs);
         self.find_textline_flow_direction(blobs);
         if self.find_initial_partitions(blobs, true, tb, diacritic_blobs) {
-            eprintln!("Detected {} diacritics", diacritic_blobs.len());
             self.sw.clear();
             Self::insert_blob_list(&mut self.sw, blobs, &tb.blobs);
             Self::insert_blob_list(&mut self.sw, blobs, &tb.large_blobs);

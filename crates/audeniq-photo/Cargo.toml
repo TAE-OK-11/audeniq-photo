@@ -15,6 +15,7 @@ photo-icc.workspace = true
 photo-meta.workspace = true
 photo-qr.workspace = true
 photo-pdf.workspace = true
+photo-ocr.workspace = true
 serde_json = "1"
 
 [lints]

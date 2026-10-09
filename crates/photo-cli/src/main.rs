@@ -6,6 +6,7 @@
 //! audeniq-photo color <file>                 color properties (artwork policy input)
 //! audeniq-photo provenance <file>            provenance fields (AI metadata signals input)
 //! audeniq-photo qr <file>                    decoded QR count
+//! audeniq-photo ocr <file>                   TSV like `tesseract <file> stdout -l eng+kor --psm 11 tsv`
 //! audeniq-photo cover <file>                 all of the above in one pass
 //! audeniq-photo sanitize <src> <dst> <mime>  drop-in for sanitize-upload.py (PDF: native,
 //!                                            no Poppler)
@@ -27,7 +28,7 @@ use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: audeniq-photo <probe|meta|color|provenance|qr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo pdf-info <file>\n       audeniq-photo pdf-render <file> <page> <dst.png>\n       audeniq-photo pdf-rasterize <src.pdf> <dst.frames>\n       audeniq-photo pdf-assemble <src.frames> <dst.pdf>\n       audeniq-photo --version"
+        "usage: audeniq-photo <probe|meta|color|provenance|qr|ocr|cover> <file>\n       audeniq-photo sanitize <src> <dst> <mime>\n       audeniq-photo convert <src> <dst.png|dst.jpg> [--quality N]\n       audeniq-photo pdf-info <file>\n       audeniq-photo pdf-render <file> <page> <dst.png>\n       audeniq-photo pdf-rasterize <src.pdf> <dst.frames>\n       audeniq-photo pdf-assemble <src.frames> <dst.pdf>\n       audeniq-photo --version"
     );
     ExitCode::from(2)
 }
@@ -112,6 +113,11 @@ fn run(args: &[String]) -> Result<(), String> {
             let n =
                 audeniq_photo::qr_count(&read(file()?)?, &deadline()).map_err(|e| e.to_string())?;
             print(&json!({"qr_count": n}));
+        }
+        "ocr" => {
+            let tsv =
+                audeniq_photo::ocr_tsv(&read(file()?)?, &deadline()).map_err(|e| e.to_string())?;
+            print!("{tsv}");
         }
         "cover" => {
             let r = audeniq_photo::inspect_cover(&read(file()?)?, &deadline())

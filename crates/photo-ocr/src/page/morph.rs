@@ -24,6 +24,25 @@ pub enum Op {
     Set,
 }
 
+/// 32 pixels of `row` starting at pixel `start` (MSB first); pixels before
+/// 0 or past the row read as 0 (they are masked out by the caller).
+#[inline]
+fn src_bits(row: &[u32], start: i64) -> u32 {
+    if start < 0 {
+        let sh = (-start) as u32;
+        return if sh >= 32 { 0 } else { src_bits(row, 0) >> sh };
+    }
+    let wi = (start >> 5) as usize;
+    let off = (start & 31) as u32;
+    let hi = row.get(wi).copied().unwrap_or(0);
+    if off == 0 {
+        hi
+    } else {
+        let lo = row.get(wi + 1).copied().unwrap_or(0);
+        (hi << off) | (lo >> (32 - off))
+    }
+}
+
 impl Bitmap {
     /// `pixRasterop(self, dx, dy, w, h, op, src, sx, sy)` with Leptonica's
     /// clipping: only the part of the rectangle inside both images changes.
@@ -72,27 +91,30 @@ impl Bitmap {
         if w <= 0 || h <= 0 {
             return;
         }
+        let first = (dx >> 5) as usize;
+        let last = ((dx + w - 1) >> 5) as usize;
+        let (lo, hi) = (i64::from(dx), i64::from(dx + w));
         for y in 0..h {
-            for x in 0..w {
-                let (px, py) = ((dx + x) as usize, (dy + y) as usize);
-                let s = src.is_some_and(|s| s.get((sx + x) as usize, (sy + y) as usize));
-                let d = self.get(px, py);
+            let drow = (dy + y) as usize * self.wpl;
+            let srow = src.map(|s| s.row((sy + y) as usize));
+            for k in first..=last {
+                let p0 = (k as i64) * 32;
+                // Bits of this word inside [dx, dx + w).
+                let a = (lo - p0).max(0) as u32;
+                let b = (hi - p0).min(32) as u32;
+                let mask = (u32::MAX >> a) & !(u32::MAX.checked_shr(b).unwrap_or(0));
+                let s = srow.map_or(0, |row| src_bits(row, p0 - i64::from(dx) + i64::from(sx)));
+                let d = self.data[drow + k];
                 let v = match op {
                     Op::Src => s,
                     Op::Or => s | d,
                     Op::And => s & d,
                     Op::AndNot => d & !s,
                     Op::Xor => s ^ d,
-                    Op::Clr => false,
-                    Op::Set => true,
+                    Op::Clr => 0,
+                    Op::Set => u32::MAX,
                 };
-                if v != d {
-                    if v {
-                        self.set(px, py);
-                    } else {
-                        self.clear(px, py);
-                    }
-                }
+                self.data[drow + k] = (d & !mask) | (v & mask);
             }
         }
     }
@@ -526,4 +548,137 @@ pub fn halftone_mask(pixs: &Bitmap) -> Option<Bitmap> {
     let hs = p2.expand_replicate(4);
     let hm = pixs.close_safe_brick(4, 4);
     Some(Bitmap::seedfill(&hs, &hm, 4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pixel-by-pixel definition of `pixRasterop` after clipping.
+    #[allow(clippy::too_many_arguments)]
+    fn rasterop_ref(
+        d: &mut Bitmap,
+        dx: i32,
+        dy: i32,
+        w: i32,
+        h: i32,
+        op: Op,
+        src: Option<&Bitmap>,
+        sx: i32,
+        sy: i32,
+    ) {
+        let (dw, dh) = (d.width as i32, d.height as i32);
+        for y in 0..h {
+            for x in 0..w {
+                let (px, py) = (dx + x, dy + y);
+                let (qx, qy) = (sx + x, sy + y);
+                if px < 0 || py < 0 || px >= dw || py >= dh {
+                    continue;
+                }
+                let s = match src {
+                    Some(s) => {
+                        if qx < 0 || qy < 0 || qx >= s.width as i32 || qy >= s.height as i32 {
+                            continue;
+                        }
+                        s.get(qx as usize, qy as usize)
+                    }
+                    None => false,
+                };
+                let dv = d.get(px as usize, py as usize);
+                let v = match op {
+                    Op::Src => s,
+                    Op::Or => s | dv,
+                    Op::And => s & dv,
+                    Op::AndNot => dv & !s,
+                    Op::Xor => s ^ dv,
+                    Op::Clr => false,
+                    Op::Set => true,
+                };
+                if v {
+                    d.set(px as usize, py as usize);
+                } else {
+                    d.clear(px as usize, py as usize);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn word_rasterop_matches_pixel_definition() {
+        let mut seed = 12345u64;
+        let mut rnd = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        for _ in 0..3000 {
+            let (w, h) = (1 + rnd(100) as usize, 1 + rnd(12) as usize);
+            let mut a = Bitmap::new(w, h);
+            let mut s = Bitmap::new(1 + rnd(100) as usize, 1 + rnd(12) as usize);
+            for v in a.data.iter_mut().chain(s.data.iter_mut()) {
+                *v = rnd(u64::from(u32::MAX)) as u32 ^ (rnd(2) as u32 * 0x8000_0001);
+            }
+            let ops = [
+                Op::Src,
+                Op::Or,
+                Op::And,
+                Op::AndNot,
+                Op::Xor,
+                Op::Clr,
+                Op::Set,
+            ];
+            let op = ops[rnd(7) as usize];
+            let mut r = |n: u64| rnd(n) as i32 - (n as i32) / 2;
+            let (dx, dy, rw, rh, sx, sy) = (r(140), r(16), r(260), r(30), r(140), r(16));
+            let use_src = r(4) != -2;
+            let mut b = a.clone();
+            a.rasterop(dx, dy, rw, rh, op, use_src.then_some(&s), sx, sy);
+            // Same clipping as the implementation, then the pixel loop.
+            let (mut cdx, mut cdy, mut cw, mut ch, mut csx, mut csy) = (dx, dy, rw, rh, sx, sy);
+            if use_src {
+                if csx < 0 {
+                    cdx -= csx;
+                    cw += csx;
+                    csx = 0;
+                }
+                if csy < 0 {
+                    cdy -= csy;
+                    ch += csy;
+                    csy = 0;
+                }
+                cw = cw.min(s.width as i32 - csx);
+                ch = ch.min(s.height as i32 - csy);
+            }
+            if cdx < 0 {
+                csx -= cdx;
+                cw += cdx;
+                cdx = 0;
+            }
+            if cdy < 0 {
+                csy -= cdy;
+                ch += cdy;
+                cdy = 0;
+            }
+            cw = cw.min(b.width as i32 - cdx);
+            ch = ch.min(b.height as i32 - cdy);
+            if cw > 0 && ch > 0 {
+                rasterop_ref(
+                    &mut b,
+                    cdx,
+                    cdy,
+                    cw,
+                    ch,
+                    op,
+                    use_src.then_some(&s),
+                    csx,
+                    csy,
+                );
+            }
+            assert_eq!(
+                a.data, b.data,
+                "{op:?} {dx} {dy} {rw} {rh} {sx} {sy} {use_src}"
+            );
+        }
+    }
 }

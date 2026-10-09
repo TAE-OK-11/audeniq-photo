@@ -4,6 +4,7 @@
 
 pub(crate) mod io;
 pub(crate) mod rand;
+mod simd;
 mod tables;
 
 use crate::reader::Reader;
@@ -192,15 +193,7 @@ impl Weights {
         else {
             unreachable!("int input to float weights")
         };
-        let ni = cols - 1;
-        for i in 0..*rows {
-            let wi = &w[i * cols..(i + 1) * cols];
-            let mut total: i32 = 0;
-            for j in 0..ni {
-                total += i32::from(wi[j]) * i32::from(u[j]);
-            }
-            v[i] = (total + i32::from(wi[ni]) * 127) as f32 * scales[i];
-        }
+        simd::dot_int_rows(*rows, *cols, w, scales, u, v);
     }
 
     fn dot_float(&self, u: &[f32], v: &mut [f32]) {
@@ -225,6 +218,29 @@ impl Weights {
         } else {
             self.dot_float(input.frow(t), v);
         }
+    }
+}
+
+/// `MatrixDotVector` rows over int8 inputs: exact integer sums, then one
+/// float multiply per row. Compiled once generically and once with AVX2.
+#[inline(always)]
+pub(crate) fn dot_int_rows_body(
+    rows: usize,
+    cols: usize,
+    w: &[i8],
+    scales: &[f32],
+    u: &[i8],
+    v: &mut [f32],
+) {
+    let ni = cols - 1;
+    let u = &u[..ni];
+    for i in 0..rows {
+        let wi = &w[i * cols..(i + 1) * cols];
+        let mut total: i32 = 0;
+        for (&a, &b) in wi[..ni].iter().zip(u) {
+            total += i32::from(a) * i32::from(b);
+        }
+        v[i] = (total + i32::from(wi[ni]) * 127) as f32 * scales[i];
     }
 }
 

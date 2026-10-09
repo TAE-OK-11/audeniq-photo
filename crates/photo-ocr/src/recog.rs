@@ -244,7 +244,13 @@ fn copy_on(dst: &mut WordRes, other: &WordRes) {
 }
 
 /// Recognizes the words of the text blocks on the original image.
-pub fn recognize_page(original: &Pix, blocks: &[TextBlock], models: &[&Model]) -> Vec<OcrBlock> {
+/// `None` when `stop` asks to give up (checked before each word).
+pub fn recognize_page(
+    original: &Pix,
+    blocks: &[TextBlock],
+    models: &[&Model],
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<OcrBlock>> {
     let mut next_key = 0u64;
     let mut rows: Vec<Vec<RowRes>> = blocks
         .iter()
@@ -261,6 +267,9 @@ pub fn recognize_page(original: &Pix, blocks: &[TextBlock], models: &[&Model]) -
                 if rr.words[i].part_of_combo {
                     i += 1;
                     continue;
+                }
+                if stop() {
+                    return None;
                 }
                 let best = classify_word(
                     &rr.words[i],
@@ -294,7 +303,8 @@ pub fn recognize_page(original: &Pix, blocks: &[TextBlock], models: &[&Model]) -
             }
         }
     }
-    rows.iter()
+    let out = rows
+        .iter()
         .map(|block_rows| OcrBlock {
             lines: block_rows
                 .iter()
@@ -323,7 +333,8 @@ pub fn recognize_page(original: &Pix, blocks: &[TextBlock], models: &[&Model]) -
                 })
                 .collect(),
         })
-        .collect()
+        .collect();
+    Some(out)
 }
 
 /// `classify_word_and_language`: the chosen candidates for one word.

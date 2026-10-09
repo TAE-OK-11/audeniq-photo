@@ -49,6 +49,7 @@ dependencies = [
  "photo-icc",
  "photo-jpeg",
  "photo-meta",
+ "photo-ocr",
  "photo-pdf",
  "photo-png",
  "photo-qr",

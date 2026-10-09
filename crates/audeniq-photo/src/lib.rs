@@ -8,6 +8,7 @@
 //! | `zbarimg` (QR count) | [`qr_count`] |
 //! | `python3` + Pillow + LittleCMS (`sanitize-upload.py`) | [`sanitize`] |
 //! | Poppler `pdfinfo` + `pdftoppm` (document sanitization) | [`pdf::info`], [`pdf::sanitize_pdf`] |
+//! | `tesseract -l eng+kor --psm 11 tsv` (artwork text scan) | [`ocr_tsv`] |
 //!
 //! Every entry point runs in-process on bytes already in memory, inside a
 //! panic guard, with explicit pixel/allocation limits and a deadline.
@@ -17,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 mod cover;
+mod ocr;
 mod orient;
 pub mod pdf;
 mod probe;
@@ -24,6 +26,7 @@ mod report;
 pub mod sanitize;
 
 pub use cover::{CoverReport, inspect_cover};
+pub use ocr::ocr_tsv;
 pub use photo_core::{Deadline, Error as CodecError, Image, Limits, PixelFormat};
 pub use probe::{Probe, probe, verify_image};
 pub use report::{

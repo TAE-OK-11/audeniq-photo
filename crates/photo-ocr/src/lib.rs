@@ -7,7 +7,9 @@
 //! and word segmentation, per-word LSTM recognition with language retry
 //! ([`recog`]) and the TSV report. [`Model::recognize_line`] alone matches
 //! `--psm 13` (one raw text line).
-#![forbid(unsafe_code)]
+// Safe code throughout, except the one call into the AVX2-compiled LSTM
+// kernel after runtime CPU detection (`lstm::simd`).
+#![deny(unsafe_code)]
 
 mod beam;
 mod dict;
@@ -313,13 +315,21 @@ impl Model {
 /// `-l` order, e.g. eng then kor): sparse-text page layout, word
 /// recognition and Tesseract's TSV report.
 pub fn ocr_tsv(pix: &Pix, models: &[&Model]) -> String {
+    ocr_tsv_until(pix, models, &|| false).expect("never stopped")
+}
+
+/// [`ocr_tsv`] that gives up (`None`) once `stop` returns true.
+pub fn ocr_tsv_until(pix: &Pix, models: &[&Model], stop: &dyn Fn() -> bool) -> Option<String> {
     let blocks = page_blocks(pix);
-    let rec = recog::recognize_page(pix, &blocks, models);
+    if stop() {
+        return None;
+    }
+    let rec = recog::recognize_page(pix, &blocks, models, stop)?;
     let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
-    format!(
+    Some(format!(
         "{header}{}",
         recog::tsv(&rec, pix.width() as i32, pix.height() as i32)
-    )
+    ))
 }
 
 /// Page segmentation for sparse text (`--psm 11`): the blocks of words.

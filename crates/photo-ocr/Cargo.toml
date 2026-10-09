@@ -9,8 +9,17 @@ license = "Apache-2.0"
 [dependencies]
 photo-core.workspace = true
 
-[lints]
-workspace = true
+# Own lint table instead of the workspace's `unsafe_code = "forbid"`: one
+# `unsafe` call enters the AVX2-compiled LSTM kernel after CPU detection
+# (src/lstm/simd.rs); everything else is denied at the crate root.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+needless_range_loop = "allow"
+chunks_exact_to_as_chunks = "allow"
+too_many_arguments = "allow"
 
 [dev-dependencies]
 audeniq-photo.workspace = true
