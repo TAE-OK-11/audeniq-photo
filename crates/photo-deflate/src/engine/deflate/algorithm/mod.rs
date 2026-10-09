@@ -7,6 +7,7 @@ use self::{huff::deflate_huff, rle::deflate_rle, stored::deflate_stored};
 
 mod fast;
 mod huff;
+mod image;
 mod medium;
 mod quick;
 mod rle;
@@ -32,6 +33,7 @@ pub fn run(stream: &mut DeflateStream, flush: DeflateFlush) -> BlockState {
         _ if stream.state.level == 0 => deflate_stored(stream, flush),
         Strategy::HuffmanOnly => deflate_huff(stream, flush),
         Strategy::Rle => deflate_rle(stream, flush),
+        Strategy::Image => image::deflate_image(stream, flush),
         Strategy::Default | Strategy::Filtered | Strategy::Fixed => {
             (CONFIGURATION_TABLE[stream.state.level as usize].func)(stream, flush)
         }

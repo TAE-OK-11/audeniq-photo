@@ -24,6 +24,12 @@ impl<'a> SymBuf<'a> {
         self.filled == self.buf.len() - 3
     }
 
+    /// Bytes used (three per symbol).
+    #[inline]
+    pub fn filled(&self) -> usize {
+        self.filled
+    }
+
     /// Returns true if there are no bytes in this ReadBuf
     #[inline]
     pub fn is_empty(&self) -> bool {

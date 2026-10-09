@@ -1,7 +1,7 @@
 //! PNG (ISO/IEC 15948) in safe Rust: chunk walking with CRC checks, a
 //! decoder for every standard color type, bit depth and Adam7, a streaming
 //! metadata-free encoder, and the exact-bytes electronic signature validator.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod decode;
 mod encode;

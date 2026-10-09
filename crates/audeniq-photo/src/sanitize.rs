@@ -292,7 +292,8 @@ pub fn sanitize(data: &[u8], kind: Kind, deadline: &Deadline) -> Result<Vec<u8>>
     })
 }
 
-/// Encode RGB/gray pixels as a metadata-free PNG (zlib level 6).
+/// Encode RGB/gray pixels as a metadata-free PNG (adaptive filters, zlib
+/// stream with the image strategy: long matches only).
 pub fn encode_png(img: &Image) -> Result<Vec<u8>> {
     Ok(photo_png::encode(img, Level::DEFAULT)?)
 }

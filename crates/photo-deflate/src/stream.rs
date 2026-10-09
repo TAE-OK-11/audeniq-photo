@@ -1,7 +1,7 @@
 //! Bounded inflate and streaming deflate, calling the engine directly.
 
 use crate::engine::{
-    deflate::{self, DeflateConfig, DeflateStream},
+    deflate::{self, DeflateConfig, DeflateStream, Strategy},
     inflate::{self, InflateConfig, InflateStream},
     DeflateFlush, InflateFlush, ReturnCode,
 };
@@ -240,18 +240,19 @@ impl Drop for DeflateState {
     }
 }
 
-fn take_deflate(level: Level, zlib: bool) -> DeflateState {
+fn take_deflate(level: Level, zlib: bool, strategy: Strategy) -> DeflateState {
     let pooled = DEFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)].take());
     let level = i32::from(level.0);
     match pooled {
         Some(mut s) => {
             let _ = deflate::reset(&mut s.0);
-            let _ = deflate::params(&mut s.0, level, Default::default());
+            let _ = deflate::params(&mut s.0, level, strategy);
             s
         }
         None => DeflateState(DeflateStream::new(DeflateConfig {
             window_bits: if zlib { 15 } else { -15 },
             level,
+            strategy,
             ..DeflateConfig::default()
         })),
     }
@@ -269,7 +270,7 @@ impl Compressor {
     /// Raw DEFLATE (no header, no checksum).
     pub fn raw(level: Level) -> Self {
         Compressor {
-            st: Some(take_deflate(level, false)),
+            st: Some(take_deflate(level, false, Strategy::Default)),
             zlib: false,
         }
     }
@@ -277,7 +278,17 @@ impl Compressor {
     /// zlib-wrapped stream (RFC 1950).
     pub fn zlib(level: Level) -> Self {
         Compressor {
-            st: Some(take_deflate(level, true)),
+            st: Some(take_deflate(level, true, Strategy::Default)),
+            zlib: true,
+        }
+    }
+
+    /// zlib-wrapped stream tuned for PNG-filtered pixel rows: only long
+    /// matches are coded (see the engine's `Strategy::Image`). `level`
+    /// sets the match search effort (hash chain length).
+    pub fn zlib_image(level: Level) -> Self {
+        Compressor {
+            st: Some(take_deflate(level, true, Strategy::Image)),
             zlib: true,
         }
     }

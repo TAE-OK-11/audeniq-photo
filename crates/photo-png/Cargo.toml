@@ -10,5 +10,12 @@ license.workspace = true
 photo-core.workspace = true
 photo-deflate.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# Only the call into the AVX2 build of the filter loop is `unsafe`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+needless_range_loop = "allow"
+chunks_exact_to_as_chunks = "allow"
+too_many_arguments = "allow"

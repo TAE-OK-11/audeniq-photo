@@ -394,6 +394,8 @@ pub fn init(stream: &mut z_stream, config: DeflateConfig) -> ReturnCode {
         max_lazy_match: 0,
         good_match: 0,
         nice_match: 0,
+        image_cost: [64; 256],
+        image_cost_mark: 0,
 
         //
         l_desc: TreeDesc::EMPTY,
@@ -668,6 +670,8 @@ pub fn copy<'a>(
         level: source_state.level,
         good_match: source_state.good_match,
         nice_match: source_state.nice_match,
+        image_cost: source_state.image_cost,
+        image_cost_mark: source_state.image_cost_mark,
         l_desc: source_state.l_desc.clone(),
         d_desc: source_state.d_desc.clone(),
         bl_desc: source_state.bl_desc.clone(),
@@ -1373,6 +1377,12 @@ pub(crate) struct State<'a> {
     l_desc: TreeDesc<HEAP_SIZE>,             /* literal and length tree */
     d_desc: TreeDesc<{ 2 * D_CODES + 1 }>,   /* distance tree */
     bl_desc: TreeDesc<{ 2 * BL_CODES + 1 }>, /* Huffman tree for bit lengths */
+
+    /// `Strategy::Image`: estimated literal cost in 1/8 bits, refreshed
+    /// from the block's literal statistics, and the symbol-buffer fill at
+    /// that refresh.
+    pub(crate) image_cost: [u8; 256],
+    pub(crate) image_cost_mark: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -1384,6 +1394,9 @@ pub enum Strategy {
     HuffmanOnly = 2,
     Rle = 3,
     Fixed = 4,
+    /// Audeniq extension: long matches only, for PNG-filtered rows
+    /// (see `algorithm/image.rs`).
+    Image = 5,
 }
 
 impl TryFrom<i32> for Strategy {
@@ -1396,6 +1409,7 @@ impl TryFrom<i32> for Strategy {
             2 => Ok(Strategy::HuffmanOnly),
             3 => Ok(Strategy::Rle),
             4 => Ok(Strategy::Fixed),
+            5 => Ok(Strategy::Image),
             _ => Err(()),
         }
     }
@@ -1461,6 +1475,11 @@ impl<'a> State<'a> {
     }
 
     #[inline(always)]
+    /// Literal frequencies of the block being collected.
+    pub(crate) fn literal_freqs(&self) -> impl Iterator<Item = u16> + '_ {
+        self.l_desc.dyn_tree[..256].iter().map(|v| v.freq())
+    }
+
     pub(crate) fn tally_lit(&mut self, unmatched: u8) -> bool {
         Self::tally_lit_help(&mut self.sym_buf, &mut self.l_desc, unmatched)
     }

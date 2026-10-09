@@ -1,6 +1,6 @@
 //! Cross-check against the reference zlib (via python3's `zlib` module) when
 //! it is available. Skips silently otherwise.
-use photo_deflate::{compress_zlib, inflate_zlib, Level};
+use photo_deflate::{compress_zlib, inflate_zlib, Compressor, Level};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -60,6 +60,27 @@ fn reference_zlib_decodes_our_streams() {
                 return;
             };
             assert_eq!(back, data, "level {level}");
+        }
+    }
+}
+
+#[test]
+fn image_strategy_roundtrips_and_reference_zlib_agrees() {
+    for data in corpus() {
+        for level in [1, 6, 9] {
+            let mut c = Compressor::zlib_image(Level::new(level));
+            let mut z = Vec::new();
+            c.write(&data, &mut z);
+            c.finish(&mut z);
+            let mut out = Vec::new();
+            let r = inflate_zlib(&z, &mut out, data.len(), false).unwrap();
+            assert!(r.complete && out == data, "level {level}");
+            if let Some(back) = python(
+                "import sys,zlib;sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))",
+                &z,
+            ) {
+                assert_eq!(back, data, "level {level}");
+            }
         }
     }
 }
@@ -209,12 +230,27 @@ fn randomized_roundtrips() {
         }
         data.truncate(len);
         let level = Level::new((case % 10) as u8);
-        let z = compress_zlib(&data, level);
+        // Every other case: the PNG image strategy, fed in uneven pieces
+        // (one call per "row") as the PNG encoder does.
+        let z = if case % 2 == 1 {
+            let mut c = Compressor::zlib_image(level);
+            let mut z = Vec::new();
+            let mut rest = &data[..];
+            while !rest.is_empty() {
+                let n = (1 + rnd() as usize % 20_000).min(rest.len());
+                c.write(&rest[..n], &mut z);
+                rest = &rest[n..];
+            }
+            c.finish(&mut z);
+            z
+        } else {
+            compress_zlib(&data, level)
+        };
         let mut out = Vec::new();
         let r = inflate_zlib(&z, &mut out, data.len(), false)
             .unwrap_or_else(|e| panic!("case {case} len {len} level {}: {e}", level.get()));
         assert!(r.complete && out == data, "case {case}");
-        if case % 16 == 0 {
+        if case % 8 < 2 {
             if let Some(back) = python(
                 "import sys,zlib;sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))",
                 &z,

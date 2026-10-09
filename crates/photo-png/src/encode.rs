@@ -30,7 +30,6 @@ pub struct Encoder<W: Write> {
     rows_left: u32,
     prev: Vec<u8>,
     filtered: Vec<u8>,
-    scratch: [Vec<u8>; 5],
 }
 
 impl<W: Write> Encoder<W> {
@@ -62,14 +61,15 @@ impl<W: Write> Encoder<W> {
         let stride = width as usize * bpp;
         Ok(Encoder {
             out,
-            z: Some(Compressor::zlib(level)),
+            z: Some(Compressor::zlib_image(level)),
             buf: Vec::with_capacity(IDAT_CHUNK * 2),
             bpp,
             stride,
             rows_left: height,
-            prev: Vec::new(),
+            // The row above the first is all zeros (PNG's definition), so
+            // Up/Paeth there equal None/Sub and lose the tie to them.
+            prev: vec![0; stride],
             filtered: vec![0; stride + 1],
-            scratch: std::array::from_fn(|_| vec![0; stride]),
         })
     }
 
@@ -79,14 +79,11 @@ impl<W: Write> Encoder<W> {
             return Err(Error::Invalid("row size"));
         }
         self.rows_left -= 1;
-        let prev = (!self.prev.is_empty()).then_some(&self.prev[..]);
-        let filter = choose_filter(row, prev, self.bpp, &mut self.scratch);
+        let filter = filter_row(row, &self.prev, self.bpp, &mut self.filtered[1..]);
         self.filtered[0] = filter;
-        self.filtered[1..].copy_from_slice(&self.scratch[filter as usize]);
         let z = self.z.as_mut().expect("encoder active");
         z.write(&self.filtered, &mut self.buf);
-        self.prev.clear();
-        self.prev.extend_from_slice(row);
+        self.prev.copy_from_slice(row);
         self.flush_idat(false)
     }
 
@@ -127,24 +124,19 @@ pub fn encode(img: &Image, level: Level) -> Result<Vec<u8>> {
     e.finish()
 }
 
-#[inline]
+/// Paeth predictor (branch-free so the filter loops vectorize).
+#[inline(always)]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let p = i16::from(a) + i16::from(b) - i16::from(c);
-    let (pa, pb, pc) = (
-        (p - i16::from(a)).abs(),
-        (p - i16::from(b)).abs(),
-        (p - i16::from(c)).abs(),
-    );
-    if pa <= pb && pa <= pc {
-        a
-    } else if pb <= pc {
-        b
-    } else {
-        c
-    }
+    let (a16, b16, c16) = (i16::from(a), i16::from(b), i16::from(c));
+    let pa = (b16 - c16).abs();
+    let pb = (a16 - c16).abs();
+    let pc = (a16 + b16 - 2 * c16).abs();
+    let bc = if pb <= pc { b } else { c };
+    if pa <= pb && pa <= pc { a } else { bc }
 }
 
 /// Filter one row into `out` (without the filter-type byte).
+#[inline(always)]
 fn apply_filter(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, out: &mut [u8]) {
     let n = row.len();
     let b = bpp.min(n);
@@ -188,26 +180,55 @@ fn apply_filter(filter: u8, row: &[u8], prev: Option<&[u8]>, bpp: usize, out: &m
     }
 }
 
-#[inline]
-fn abs_sum(v: &[u8]) -> u64 {
-    v.iter().map(|&x| u64::from((x as i8).unsigned_abs())).sum()
+photo_core::multiversion! {
+    /// libpng's minimum-sum-of-absolute-differences heuristic (as Pillow
+    /// uses): the five candidate sums are accumulated in one pass without
+    /// storing the candidates; only the winner is then written to `out`.
+    /// Ties go to the lower filter type, as before.
+    fn filter_row(row: &[u8], prev: &[u8], bpp: usize, out: &mut [u8]) -> u8 = filter_row_body;
 }
 
-/// libpng's minimum-sum-of-absolute-differences heuristic (as Pillow
-/// uses). Each candidate is produced into a scratch row once, then the
-/// winner is copied; every loop is branch-free and vectorizes.
-fn choose_filter(row: &[u8], prev: Option<&[u8]>, bpp: usize, scratch: &mut [Vec<u8>; 5]) -> u8 {
-    let mut best = (u64::MAX, 0u8);
-    for filter in 0..5u8 {
-        if prev.is_none() && (filter == 2 || filter == 4) {
-            continue; // identical to None / Sub on the first row
+#[inline(always)]
+fn filter_row_body(row: &[u8], prev: &[u8], bpp: usize, out: &mut [u8]) -> u8 {
+    let n = row.len();
+    let prev = &prev[..n];
+    let b = bpp.min(n);
+    let cost = |v: u8| u32::from((v as i8).unsigned_abs());
+    let mut sums = [0u32; 5];
+    for i in 0..b {
+        let (x, up) = (row[i], prev[i]);
+        sums[0] += cost(x);
+        sums[1] += cost(x);
+        sums[2] += cost(x.wrapping_sub(up));
+        sums[3] += cost(x.wrapping_sub(up >> 1));
+        sums[4] += cost(x.wrapping_sub(up));
+    }
+    // Per-chunk u16 accumulators (at most 128 per byte, so 256 bytes per
+    // chunk cannot overflow) keep the main loop in 16-bit lanes.
+    let mut i = b;
+    while i < n {
+        let end = (i + 256).min(n);
+        let mut acc = [0u16; 5];
+        for j in i..end {
+            let (x, a, up, c) = (row[j], row[j - bpp], prev[j], prev[j - bpp]);
+            let c16 = |v: u8| u16::from((v as i8).unsigned_abs());
+            acc[0] += c16(x);
+            acc[1] += c16(x.wrapping_sub(a));
+            acc[2] += c16(x.wrapping_sub(up));
+            acc[3] += c16(x.wrapping_sub(((u16::from(a) + u16::from(up)) >> 1) as u8));
+            acc[4] += c16(x.wrapping_sub(paeth(a, up, c)));
         }
-        let buf = &mut scratch[filter as usize];
-        apply_filter(filter, row, prev, bpp, buf);
-        let sum = abs_sum(buf);
-        if sum < best.0 {
-            best = (sum, filter);
+        for k in 0..5 {
+            sums[k] += u32::from(acc[k]);
+        }
+        i = end;
+    }
+    let mut best = 0;
+    for k in 1..5 {
+        if sums[k] < sums[best] {
+            best = k;
         }
     }
-    best.1
+    apply_filter(best as u8, row, Some(prev), bpp, out);
+    best as u8
 }
