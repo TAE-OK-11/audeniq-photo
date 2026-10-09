@@ -8,10 +8,15 @@ use smallvec::SmallVec;
 use std::array;
 use std::ops::Rem;
 
+mod compiled;
+
 /// A type 4 function (postscript function).
 #[derive(Debug)]
 pub(crate) struct Type4 {
     program: Vec<PostScriptOp>,
+    /// Register code for programs whose stack layout is static (most real
+    /// ones); [`Self::program`] is interpreted otherwise.
+    compiled: Option<compiled::Compiled>,
     clamper: Clamper,
 }
 
@@ -21,15 +26,26 @@ impl Type4 {
         let dict = stream.dict().clone();
         let clamper = Clamper::new(&dict)?;
 
+        let program = parse_procedure(&stream.decoded().ok()?)?;
+        let compiled = compiled::Compiled::new(&program, clamper.domain.len());
+
         Some(Self {
             clamper,
-            program: parse_procedure(&stream.decoded().ok()?)?,
+            program,
+            compiled,
         })
     }
 
     /// Evaluate the function with the given input.
     pub(crate) fn eval(&self, mut input: Values) -> Option<Values> {
         self.clamper.clamp_input(&mut input);
+
+        if let Some(c) = &self.compiled
+            && let Some(mut out) = c.run(&input)
+        {
+            self.clamper.clamp_output(&mut out);
+            return Some(out);
+        }
 
         let mut arg_stack = InterpreterStack::new();
 
@@ -44,6 +60,114 @@ impl Type4 {
         self.clamper.clamp_output(&mut out);
 
         Some(out)
+    }
+}
+
+/// One-operand numeric operators (`one_f`), shared by the interpreter and
+/// the compiler so both compute identical values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Un {
+    Abs,
+    Ceiling,
+    Cos,
+    Cvi,
+    Cvr,
+    Floor,
+    Ln,
+    Log,
+    Neg,
+    Round,
+    Sin,
+    Sqrt,
+    Truncate,
+}
+
+impl Un {
+    #[inline(always)]
+    fn apply(self, n: f32) -> f32 {
+        match self {
+            Self::Abs => n.abs(),
+            Self::Ceiling => n.ceil(),
+            Self::Cos => n.to_radians().cos(),
+            Self::Cvi | Self::Truncate => n.trunc(),
+            Self::Cvr => n,
+            Self::Floor => n.floor(),
+            Self::Ln => n.ln(),
+            Self::Log => n.log10(),
+            Self::Neg => -n,
+            Self::Round => n.round(),
+            Self::Sin => n.to_radians().sin(),
+            Self::Sqrt => n.sqrt(),
+        }
+    }
+}
+
+/// Two-operand numeric operators (`two_f`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Bin {
+    Add,
+    Atan,
+    Div,
+    Exp,
+    Idiv,
+    Mod,
+    Mul,
+    Sub,
+    And,
+    Bitshift,
+    Eq,
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Ne,
+}
+
+impl Bin {
+    #[inline(always)]
+    fn apply(self, n1: f32, n2: f32) -> f32 {
+        fn bf(cond: bool) -> f32 {
+            (cond as i32) as f32
+        }
+        match self {
+            Self::Add => n1 + n2,
+            Self::Atan => {
+                let mut res = n1.atan2(n2).to_degrees() % 360.0;
+                if res < 0.0 {
+                    res += 360.0;
+                }
+
+                res
+            }
+            Self::Div => n1 / n2,
+            Self::Exp => n1.powf(n2),
+            Self::Idiv => {
+                let n1 = n1 as i32;
+                let n2 = n2 as i32;
+
+                (n1 / n2) as f32
+            }
+            Self::Mod => n1.rem(n2),
+            Self::Mul => n1 * n2,
+            Self::Sub => n1 - n2,
+            Self::And => (n1 as i32 & n2 as i32) as f32,
+            Self::Bitshift => {
+                let num = n1 as u32;
+                let shift = n2 as i32;
+
+                if shift >= 0 {
+                    (num << shift) as f32
+                } else {
+                    (num >> -shift) as f32
+                }
+            }
+            Self::Eq => bf(n1 == n2),
+            Self::Ge => bf(n1 >= n2),
+            Self::Gt => bf(n1 > n2),
+            Self::Le => bf(n1 <= n2),
+            Self::Lt => bf(n1 < n2),
+            Self::Ne => bf(n1 != n2),
+        }
     }
 }
 
@@ -204,123 +328,17 @@ fn eval_inner(procedure: &[PostScriptOp], arg_stack: &mut InterpreterStack) -> O
         };
     }
 
-    fn bf(cond: bool) -> f32 {
-        (cond as i32) as f32
-    }
-
     for op in procedure {
         match op {
             PostScriptOp::Number(n) => arg_stack.push(Argument::Float(n.as_f64() as f32))?,
-            PostScriptOp::Abs => {
-                one_f!(|n: f32| n.abs());
+            PostScriptOp::Un(u) => {
+                one_f!(|n: f32| u.apply(n));
             }
-            PostScriptOp::Add => {
-                two_f!(|n1: f32, n2: f32| n1 + n2);
-            }
-            PostScriptOp::Atan => {
-                two_f!(|n1: f32, n2: f32| {
-                    let mut res = n1.atan2(n2).to_degrees() % 360.0;
-                    if res < 0.0 {
-                        res += 360.0;
-                    }
-
-                    res
-                });
-            }
-            PostScriptOp::Ceiling => {
-                one_f!(|n: f32| n.ceil());
-            }
-            PostScriptOp::Cos => {
-                one_f!(|n: f32| n.to_radians().cos());
-            }
-            PostScriptOp::Cvi => {
-                one_f!(|n: f32| n.trunc());
-            }
-            PostScriptOp::Cvr => {
-                one_f!(|n: f32| n);
-            }
-            PostScriptOp::Div => {
-                two_f!(|n1: f32, n2: f32| n1 / n2);
-            }
-            PostScriptOp::Exp => {
-                two_f!(|n1: f32, n2: f32| n1.powf(n2));
-            }
-            PostScriptOp::Floor => {
-                one_f!(|n: f32| n.floor());
-            }
-            PostScriptOp::Idiv => {
-                two_f!(|n1: f32, n2: f32| {
-                    let n1 = n1 as i32;
-                    let n2 = n2 as i32;
-
-                    (n1 / n2) as f32
-                });
-            }
-            PostScriptOp::Ln => {
-                one_f!(|n: f32| n.ln());
-            }
-            PostScriptOp::Log => {
-                one_f!(|n: f32| n.log10());
-            }
-            PostScriptOp::Mod => {
-                two_f!(|n1: f32, n2: f32| n1.rem(n2));
-            }
-            PostScriptOp::Mul => {
-                two_f!(|n1: f32, n2: f32| n1 * n2);
-            }
-            PostScriptOp::Neg => {
-                one_f!(|n: f32| -n);
-            }
-            PostScriptOp::Round => {
-                one_f!(|n: f32| n.round());
-            }
-            PostScriptOp::Sin => {
-                one_f!(|n: f32| n.to_radians().sin());
-            }
-            PostScriptOp::Sqrt => {
-                one_f!(|n: f32| n.sqrt());
-            }
-            PostScriptOp::Sub => {
-                two_f!(|n1: f32, n2: f32| n1 - n2);
-            }
-            PostScriptOp::Truncate => {
-                one_f!(|n: f32| n.trunc());
-            }
-            PostScriptOp::And => {
-                two_f!(|n1: f32, n2: f32| (n1 as i32 & n2 as i32) as f32);
-            }
-            PostScriptOp::Bitshift => {
-                two_f!(|n1: f32, n2: f32| {
-                    let num = n1 as u32;
-                    let shift = n2 as i32;
-
-                    if shift >= 0 {
-                        (num << shift) as f32
-                    } else {
-                        (num >> -shift) as f32
-                    }
-                });
-            }
-            PostScriptOp::Eq => {
-                two_f!(|n1: f32, n2: f32| bf(n1 == n2));
+            PostScriptOp::Bin(b) => {
+                two_f!(|n1: f32, n2: f32| b.apply(n1, n2));
             }
             PostScriptOp::False => {
                 zero!(Argument::Bool(false));
-            }
-            PostScriptOp::Ge => {
-                two_f!(|n1: f32, n2: f32| bf(n1 >= n2));
-            }
-            PostScriptOp::Gt => {
-                two_f!(|n1: f32, n2: f32| bf(n1 > n2));
-            }
-            PostScriptOp::Le => {
-                two_f!(|n1: f32, n2: f32| bf(n1 <= n2));
-            }
-            PostScriptOp::Lt => {
-                two_f!(|n1: f32, n2: f32| bf(n1 < n2));
-            }
-            PostScriptOp::Ne => {
-                two_f!(|n1: f32, n2: f32| bf(n1 != n2));
             }
             PostScriptOp::Not => {
                 let arg = arg_stack.pop()?;
@@ -447,36 +465,9 @@ fn parse_procedure_inner(r: &mut Reader<'_>) -> Option<Vec<PostScriptOp>> {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PostScriptOp {
     Number(Number),
-    Abs,
-    Add,
-    Atan,
-    Ceiling,
-    Cos,
-    Cvi,
-    Cvr,
-    Div,
-    Exp,
-    Floor,
-    Idiv,
-    Ln,
-    Log,
-    Mod,
-    Mul,
-    Neg,
-    Round,
-    Sin,
-    Sqrt,
-    Sub,
-    Truncate,
-    And,
-    Bitshift,
-    Eq,
+    Un(Un),
+    Bin(Bin),
     False,
-    Ge,
-    Gt,
-    Le,
-    Lt,
-    Ne,
     Not,
     Or,
     True,
@@ -499,36 +490,36 @@ impl PostScriptOp {
         } else {
             let op = r.read::<content::Operator<'_>>(&ReaderContext::dummy())?;
             match op.as_ref() {
-                b"abs" => Self::Abs,
-                b"add" => Self::Add,
-                b"atan" => Self::Atan,
-                b"ceiling" => Self::Ceiling,
-                b"cos" => Self::Cos,
-                b"cvi" => Self::Cvi,
-                b"cvr" => Self::Cvr,
-                b"div" => Self::Div,
-                b"exp" => Self::Exp,
-                b"floor" => Self::Floor,
-                b"idiv" => Self::Idiv,
-                b"ln" => Self::Ln,
-                b"log" => Self::Log,
-                b"mod" => Self::Mod,
-                b"mul" => Self::Mul,
-                b"neg" => Self::Neg,
-                b"round" => Self::Round,
-                b"sin" => Self::Sin,
-                b"sqrt" => Self::Sqrt,
-                b"sub" => Self::Sub,
-                b"truncate" => Self::Truncate,
-                b"and" => Self::And,
-                b"bitshift" => Self::Bitshift,
-                b"eq" => Self::Eq,
+                b"abs" => Self::Un(Un::Abs),
+                b"add" => Self::Bin(Bin::Add),
+                b"atan" => Self::Bin(Bin::Atan),
+                b"ceiling" => Self::Un(Un::Ceiling),
+                b"cos" => Self::Un(Un::Cos),
+                b"cvi" => Self::Un(Un::Cvi),
+                b"cvr" => Self::Un(Un::Cvr),
+                b"div" => Self::Bin(Bin::Div),
+                b"exp" => Self::Bin(Bin::Exp),
+                b"floor" => Self::Un(Un::Floor),
+                b"idiv" => Self::Bin(Bin::Idiv),
+                b"ln" => Self::Un(Un::Ln),
+                b"log" => Self::Un(Un::Log),
+                b"mod" => Self::Bin(Bin::Mod),
+                b"mul" => Self::Bin(Bin::Mul),
+                b"neg" => Self::Un(Un::Neg),
+                b"round" => Self::Un(Un::Round),
+                b"sin" => Self::Un(Un::Sin),
+                b"sqrt" => Self::Un(Un::Sqrt),
+                b"sub" => Self::Bin(Bin::Sub),
+                b"truncate" => Self::Un(Un::Truncate),
+                b"and" => Self::Bin(Bin::And),
+                b"bitshift" => Self::Bin(Bin::Bitshift),
+                b"eq" => Self::Bin(Bin::Eq),
                 b"false" => Self::False,
-                b"ge" => Self::Ge,
-                b"gt" => Self::Gt,
-                b"le" => Self::Le,
-                b"lt" => Self::Lt,
-                b"ne" => Self::Ne,
+                b"ge" => Self::Bin(Bin::Ge),
+                b"gt" => Self::Bin(Bin::Gt),
+                b"le" => Self::Bin(Bin::Le),
+                b"lt" => Self::Bin(Bin::Lt),
+                b"ne" => Self::Bin(Bin::Ne),
                 b"not" => Self::Not,
                 b"or" => Self::Or,
                 b"true" => Self::True,
@@ -605,17 +596,23 @@ mod tests {
         let procedure = format!("{{{prog}}}");
         let procedure = parse_procedure(procedure.as_bytes()).unwrap();
 
-        let type4 = Type4 {
+        let compiled = super::compiled::Compiled::new(&procedure, 0);
+        let interpreted = Type4 {
             program: procedure,
+            compiled: None,
             clamper: Clamper {
                 domain: TupleVec::default(),
                 range: None,
             },
         };
 
-        let res = type4.eval(Values::new()).unwrap();
+        let res = interpreted.eval(Values::new()).unwrap();
 
         assert_eq!(res.as_slice(), out);
+        // The register code agrees bit for bit.
+        let c = compiled.expect("static program").run(&[]).unwrap();
+        let bits = |v: &[f32]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&c), bits(&res), "{prog}");
     }
 
     #[test]
@@ -895,6 +892,7 @@ mod tests {
         let procedure = parse_procedure(b"{  }").unwrap();
 
         let type4 = Function(Arc::new(FunctionType::Type4(Type4 {
+            compiled: super::compiled::Compiled::new(&procedure, 3),
             program: procedure,
             clamper: Clamper {
                 domain: smallvec![(-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)],

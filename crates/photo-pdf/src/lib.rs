@@ -418,11 +418,38 @@ pub fn render_rgb<'a>(
         },
     );
     drop(ctx);
-    // Opaque background: premultiplied RGBA equals straight RGBA.
-    let rgba = pixmap.data_as_u8_slice();
-    let mut rgb = Vec::with_capacity(usize::from(width) * usize::from(height) * 3);
-    for p in rgba.chunks_exact(4) {
-        rgb.extend_from_slice(&p[..3]);
+    // Opaque background: premultiplied RGBA equals straight RGBA. Pack it to
+    // RGB in the pixmap's own buffer.
+    let mut buf = pixmap.take_rgba8(vello_cpu::peniko::ImageAlphaType::AlphaPremultiplied);
+    pack_rgb_in_place(&mut buf);
+    Some(buf)
+}
+
+/// Drop the alpha byte of every RGBA pixel in place (front to back: pixel
+/// `i` moves from `4i` to `3i`, never over a source still to be read) and
+/// truncate to the packed RGB length.
+fn pack_rgb_in_place(buf: &mut Vec<u8>) {
+    const B: usize = 16;
+    let n = buf.len() / 4;
+    let whole = n / B * B;
+    for i0 in (0..whole).step_by(B) {
+        let mut words = [0u32; B];
+        for (w, p) in words
+            .iter_mut()
+            .zip(buf[4 * i0..4 * i0 + 4 * B].chunks_exact(4))
+        {
+            *w = u32::from_le_bytes(p.try_into().expect("4"));
+        }
+        let mut out = [0u8; 3 * B + 1];
+        for (k, w) in words.iter().enumerate() {
+            // Writes four bytes; the fourth is overwritten by the next pixel
+            // (or dropped: only `3 * B` bytes are copied out).
+            out[3 * k..3 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        buf[3 * i0..3 * i0 + 3 * B].copy_from_slice(&out[..3 * B]);
     }
-    Some(rgb)
+    for i in whole..n {
+        buf.copy_within(4 * i..4 * i + 3, 3 * i);
+    }
+    buf.truncate(n * 3);
 }

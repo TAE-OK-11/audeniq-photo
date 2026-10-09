@@ -22,7 +22,6 @@ pub(super) const RESAMPLING_FUNCTION: ResamplingFunction = ResamplingFunction::H
 #[derive(Clone, Copy)]
 enum ImagePixelFormat {
     Luma,
-    Rgb,
     PremultipliedRgba,
 }
 
@@ -76,6 +75,74 @@ impl RenderImageData {
             Self::Rgb(d) => d.interpolate,
             Self::Luma(d) => d.interpolate,
             Self::Solid(d) => d.interpolate,
+        }
+    }
+}
+
+/// `n` RGBA pixels from `px(i)`, written in place (no per-pixel growth).
+#[inline(always)]
+fn to_rgba(n: usize, px: impl Fn(usize) -> [u8; 4]) -> Vec<u8> {
+    let mut out = vec![0u8; n * 4];
+    for (i, o) in out.chunks_exact_mut(4).enumerate() {
+        o.copy_from_slice(&px(i));
+    }
+    out
+}
+
+/// Widen `n` packed RGB pixels at the start of `buf` (len `4 * n`) to RGBA
+/// in place, back to front, taking alpha from `alpha` (opaque when absent).
+pub(crate) fn expand_rgb_in_place(buf: &mut [u8], alpha: Option<&[u8]>) {
+    // Pixel `i` moves from `3i` to `4i`: going back to front, every write
+    // lands at or past the source still to be read, and each block is read
+    // whole before it is written.
+    const B: usize = 16;
+    let n = buf.len() / 4;
+    let whole = n / B * B;
+    for i in (whole..n).rev() {
+        let [r, g, b] = [buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]];
+        let a = alpha.map_or(255, |a| a[i]);
+        buf[4 * i..4 * i + 4].copy_from_slice(&[r, g, b, a]);
+    }
+    for i0 in (0..whole).step_by(B).rev() {
+        let mut src = [0u8; 3 * B + 1];
+        src[..3 * B].copy_from_slice(&buf[3 * i0..3 * i0 + 3 * B]);
+        let mut words = [0u32; B];
+        for (k, w) in words.iter_mut().enumerate() {
+            // The fourth byte read belongs to the next pixel; replaced below.
+            let v = u32::from_le_bytes(src[3 * k..3 * k + 4].try_into().expect("4"));
+            *w = v & 0x00FF_FFFF;
+        }
+        match alpha {
+            None => words.iter_mut().for_each(|w| *w |= 0xFF00_0000),
+            Some(a) => {
+                for (w, &a) in words.iter_mut().zip(&a[i0..i0 + B]) {
+                    *w |= u32::from(a) << 24;
+                }
+            }
+        }
+        for (o, w) in buf[4 * i0..4 * i0 + 4 * B].chunks_exact_mut(4).zip(words) {
+            o.copy_from_slice(&w.to_le_bytes());
+        }
+    }
+}
+
+/// Interleave RGB with an alpha plane (opaque when absent).
+fn rgb_to_rgba(rgb: &[u8], alpha: Option<&[u8]>) -> Vec<u8> {
+    let n = rgb.len() / 3;
+    match alpha {
+        None => {
+            let mut out = vec![255u8; n * 4];
+            for (o, i) in out.chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
+                o[..3].copy_from_slice(i);
+            }
+            out
+        }
+        Some(a) => {
+            let mut out = vec![0u8; n.min(a.len()) * 4];
+            for ((o, i), &a) in out.chunks_exact_mut(4).zip(rgb.chunks_exact(3)).zip(a) {
+                o.copy_from_slice(&[i[0], i[1], i[2], a]);
+            }
+            out
         }
     }
 }
@@ -139,16 +206,6 @@ impl Renderer<'_> {
                     scaler.plan_planar_resampling(source_size, target_size)
                 },
             ),
-            ImagePixelFormat::Rgb => self.resize_image_data_impl::<3>(
-                data,
-                src_width,
-                src_height,
-                new_width,
-                new_height,
-                |scaler, source_size, target_size| {
-                    scaler.plan_rgb_resampling(source_size, target_size)
-                },
-            ),
             ImagePixelFormat::PremultipliedRgba => self.resize_image_data_impl::<4>(
                 data,
                 src_width,
@@ -160,6 +217,35 @@ impl Renderer<'_> {
                 },
             ),
         }
+    }
+
+    /// Resample RGB into the first `3 * new_width * new_height` bytes of `out`.
+    fn resize_rgb_into(
+        &self,
+        data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        new_width: u32,
+        new_height: u32,
+        out: &mut [u8],
+    ) {
+        let source_size = ImageSize::new(src_width as usize, src_height as usize);
+        let target_size = ImageSize::new(new_width as usize, new_height as usize);
+        let src =
+            ImageStore::<u8, 3>::from_slice(data, src_width as usize, src_height as usize).unwrap();
+        let len = new_width as usize * new_height as usize * 3;
+        let mut dst = ImageStoreMut::<u8, 3>::from_slice(
+            &mut out[..len],
+            new_width as usize,
+            new_height as usize,
+        )
+        .unwrap();
+        let plan = self
+            .global
+            .scaler
+            .plan_rgb_resampling(source_size, target_size)
+            .unwrap();
+        plan.resample(&src, &mut dst).unwrap();
     }
 
     fn resize_image_data_impl<const N: usize>(
@@ -264,11 +350,8 @@ impl Renderer<'_> {
                 resized_alpha
             };
 
-            let mut out = Vec::with_capacity(img_width as usize * img_height as usize * 4);
-            for a in alpha_data {
-                out.extend_from_slice(&[solid.color[0], solid.color[1], solid.color[2], a]);
-            }
-            out
+            let [r, g, b] = solid.color;
+            to_rgba(alpha_data.len(), |i| [r, g, b, alpha_data[i]])
         } else if matches!(&image_data, RenderImageData::Luma(_)) && !has_alpha {
             // We cannot lift this up due to borrowing issues.
             let RenderImageData::Luma(luma) = image_data else {
@@ -295,10 +378,10 @@ impl Renderer<'_> {
                 resized
             };
 
-            luma_data
-                .iter()
-                .flat_map(|g| [*g, *g, *g, 255])
-                .collect::<Vec<_>>()
+            to_rgba(luma_data.len(), |i| {
+                let g = luma_data[i];
+                [g, g, g, 255]
+            })
         } else if matches!(&image_data, RenderImageData::Luma(_)) && has_alpha {
             let RenderImageData::Luma(luma) = image_data else {
                 unreachable!()
@@ -333,24 +416,27 @@ impl Renderer<'_> {
                 (resized_luma, resized_alpha)
             };
 
-            let mut out = Vec::with_capacity(img_width as usize * img_height as usize * 4);
-            for (g, a) in luma_data.iter().zip(alpha_data) {
-                out.extend_from_slice(&[*g, *g, *g, a]);
-            }
-            out
+            to_rgba(luma_data.len().min(alpha_data.len()), |i| {
+                let g = luma_data[i];
+                [g, g, g, alpha_data[i]]
+            })
         } else if matches!(&image_data, RenderImageData::Rgb(_)) && needs_resize {
             let RenderImageData::Rgb(rgb) = image_data else {
                 unreachable!()
             };
 
-            let resized = self.resize_image_data(
-                rgb.data,
+            // Resampled RGB lands in a buffer sized for RGBA and is widened
+            // in place (no second page-sized buffer).
+            let mut resized = vec![0; new_width as usize * new_height as usize * 4];
+            self.resize_rgb_into(
+                &rgb.data,
                 img_width,
                 img_height,
                 new_width,
                 new_height,
-                ImagePixelFormat::Rgb,
+                &mut resized,
             );
+            drop(rgb);
             let resized_alpha = alpha_data.map(|alpha| {
                 self.resize_image_data(
                     alpha.data,
@@ -368,17 +454,8 @@ impl Renderer<'_> {
             img_width = new_width;
             img_height = new_height;
 
-            let mut out = Vec::with_capacity((img_width * img_height) as usize * 4);
-            if let Some(alpha) = resized_alpha {
-                for (px, a) in resized.chunks_exact(3).zip(alpha) {
-                    out.extend_from_slice(&[px[0], px[1], px[2], a]);
-                }
-            } else {
-                for px in resized.chunks_exact(3) {
-                    out.extend_from_slice(&[px[0], px[1], px[2], 255]);
-                }
-            }
-            out
+            expand_rgb_in_place(&mut resized, resized_alpha.as_deref());
+            resized
         } else {
             let (rgb_data, alpha_data) = match image_data {
                 RenderImageData::Rgb(rgb) => (rgb.data, alpha_data.map(|a| a.data)),
@@ -400,17 +477,7 @@ impl Renderer<'_> {
                 }
             };
 
-            let mut rgba_data = match alpha_data {
-                None => rgb_data
-                    .chunks_exact(3)
-                    .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
-                    .collect::<Vec<_>>(),
-                Some(alpha) => rgb_data
-                    .chunks_exact(3)
-                    .zip(alpha)
-                    .flat_map(|(rgb, a)| [rgb[0], rgb[1], rgb[2], a])
-                    .collect::<Vec<_>>(),
-            };
+            let mut rgba_data = rgb_to_rgba(&rgb_data, alpha_data.as_deref());
 
             if !needs_resize {
                 rgba_data
