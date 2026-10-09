@@ -1,13 +1,14 @@
-//! Marker-driven JPEG decoding: sequential (interleaved scans decode
-//! straight into sample planes) and buffered (progressive or multi-scan,
-//! coefficients kept until the end, as libjpeg's full-image buffer).
+//! Marker-driven JPEG decoding: sequential (one interleaved scan streams
+//! MCU rows through three-band sample rings into the output image) and
+//! buffered (progressive or multi-scan, coefficients kept until the end, as
+//! libjpeg's full-image buffer).
 
 use crate::ZIGZAG;
-use crate::color::{Plane, convert};
+use crate::color::{Converter, Plane, RING, convert, output_format};
 use crate::huffman::{BitReader, HuffTable};
 use crate::idct::idct_islow;
 use crate::markers::{ColorTransform, FrameInfo, Info, assemble_icc, color_transform, next_marker};
-use photo_core::{Bytes, Deadline, Error, Image, Limits, Result};
+use photo_core::{Bytes, Deadline, Error, Image, Limits, PixelFormat, Result};
 
 /// Progressive files with more scans than this are refused (scan bombs).
 const MAX_SCANS: usize = 128;
@@ -38,6 +39,19 @@ struct Frame {
     mcus_y: usize,
     progressive: bool,
     buffered: Option<bool>,
+    stream: Option<Stream>,
+}
+
+/// Output of a single-scan sequential frame, filled MCU row by MCU row.
+struct Stream {
+    /// Ring planes of the components that reach the output.
+    planes: Vec<Plane>,
+    conv: Converter,
+    format: PixelFormat,
+    data: Vec<u8>,
+    /// Output rows per row group (MCU row, or block row of a one-component
+    /// scan).
+    rows: usize,
 }
 
 struct State {
@@ -50,6 +64,9 @@ struct State {
     eobrun: u32,
     /// Only component 0 needs pixels (luma decode of YCbCr/YCCK).
     luma_only: bool,
+    jfif: bool,
+    adobe: Option<u8>,
+    opts: DecodeOptions,
 }
 
 fn parse_dqt(data: &[u8], qt: &mut [Option<[u16; 64]>; 4]) -> Result<()> {
@@ -164,24 +181,75 @@ impl Frame {
             mcus_y,
             progressive,
             buffered: None,
+            stream: None,
         })
     }
 
-    fn allocate(&mut self, buffered: bool, luma_only: bool, limits: &Limits) -> Result<()> {
-        let mut total: u64 = 0;
-        for c in &self.comps {
-            total += (c.bw * c.bh * 64) as u64 * if buffered { 2 } else { 1 };
-        }
-        limits.alloc_size(total, 1)?;
-        for (i, c) in self.comps.iter_mut().enumerate() {
-            if buffered {
-                c.coefs = vec![0; c.bw * c.bh * 64];
-            } else if i == 0 || !luma_only {
-                c.plane = vec![0; c.bw * c.bh * 64];
-            }
-        }
+    /// Buffered frames keep every coefficient; a direct frame decodes into
+    /// rings of three row groups per component and converts as it goes.
+    fn allocate(
+        &mut self,
+        buffered: bool,
+        output: Option<(ColorTransform, bool)>,
+        limits: &Limits,
+    ) -> Result<()> {
         self.buffered = Some(buffered);
+        if buffered {
+            let total: u64 = self
+                .comps
+                .iter()
+                .map(|c| (c.bw * c.bh * 64) as u64 * 2)
+                .sum();
+            limits.alloc_size(total, 1)?;
+            for c in &mut self.comps {
+                c.coefs = vec![0; c.bw * c.bh * 64];
+            }
+            return Ok(());
+        }
+        let (transform, invert) = output.expect("direct frames know their output");
+        let format = output_format(transform);
+        let (w, h) = (self.info.width as usize, self.info.height as usize);
+        let one = self.comps.len() == 1;
+        let planes: Vec<Plane> = self.comps[..format.channels().min(self.comps.len())]
+            .iter()
+            .map(|c| {
+                let band = if one { 8 } else { 8 * c.v };
+                Plane {
+                    data: vec![0; RING * band * c.bw * 8],
+                    stride: c.bw * 8,
+                    width: c.dw,
+                    height: c.dh,
+                    h_ratio: self.max_h / c.h,
+                    v_ratio: self.max_v / c.v,
+                    band,
+                }
+            })
+            .collect();
+        let rings: usize = planes.iter().map(|p| p.data.len()).sum();
+        limits.alloc_size((w * h * format.channels() + rings) as u64, 1)?;
+        let conv = Converter::new(&planes, transform, invert, w)?;
+        self.stream = Some(Stream {
+            planes,
+            conv,
+            format,
+            data: vec![0; w * h * format.channels()],
+            rows: if one { 8 } else { 8 * self.max_v },
+        });
         Ok(())
+    }
+}
+
+impl Stream {
+    /// Convert row group `g`; its neighbours must still be in the rings.
+    fn emit(&mut self, g: usize, width: usize, height: usize) {
+        let y0 = g * self.rows;
+        let y1 = ((g + 1) * self.rows).min(height);
+        if y0 >= y1 {
+            return;
+        }
+        let row = width * self.format.channels();
+        self.conv
+            .rows(&self.planes, y0, &mut self.data[y0 * row..y1 * row]);
     }
 }
 
@@ -252,9 +320,10 @@ pub fn decode_with(
         scans: 0,
         eobrun: 0,
         luma_only: false,
+        jfif: false,
+        adobe: None,
+        opts: *opts,
     };
-    let mut jfif = false;
-    let mut adobe = None;
     let mut icc_chunks = Vec::new();
     let (mut exif, mut xmp) = (None, None);
     let mut comments = Vec::new();
@@ -303,7 +372,7 @@ pub fn decode_with(
                     && let Some(f) = &st.frame
                 {
                     st.luma_only = matches!(
-                        color_transform(&f.info, jfif, adobe),
+                        color_transform(&f.info, st.jfif, st.adobe),
                         ColorTransform::YCbCr | ColorTransform::Ycck
                     );
                 }
@@ -314,7 +383,7 @@ pub fn decode_with(
                 pos = scan(data, body, pos, &mut st, limits, deadline)?;
             }
             0xDC => return Err(Error::Unsupported("JPEG DNL marker")),
-            0xE0 if body.starts_with(b"JFIF\0") => jfif = true,
+            0xE0 if body.starts_with(b"JFIF\0") => st.jfif = true,
             0xE1 if body.starts_with(b"Exif\0") && body.len() > 6 && exif.is_none() => {
                 exif = Some(body[6..].to_vec())
             }
@@ -324,7 +393,7 @@ pub fn decode_with(
             0xE2 if body.starts_with(b"ICC_PROFILE\0") && body.len() >= 14 => {
                 icc_chunks.push((body[12], body[13], &body[14..]))
             }
-            0xEE if body.starts_with(b"Adobe") && body.len() >= 12 => adobe = Some(body[11]),
+            0xEE if body.starts_with(b"Adobe") && body.len() >= 12 => st.adobe = Some(body[11]),
             0xFE => comments.push(body.to_vec()),
             _ => {}
         }
@@ -333,13 +402,59 @@ pub fn decode_with(
     if st.scans == 0 {
         return Err(Error::Invalid("no scans"));
     }
+    let (jfif, adobe) = (st.jfif, st.adobe);
     let transform = color_transform(&frame.info, jfif, adobe);
-    let luma_only =
-        st.luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
+    let image = if let Some(stream) = frame.stream.take() {
+        Image {
+            width: frame.info.width,
+            height: frame.info.height,
+            format: stream.format,
+            data: stream.data,
+        }
+    } else {
+        buffered_image(&mut frame, transform, st.luma_only, opts, deadline)?
+    };
+    let info = Info {
+        icc_profile: assemble_icc(&mut icc_chunks),
+        color: transform,
+        frame: frame.info,
+        jfif,
+        adobe_transform: adobe,
+        exif,
+        xmp,
+        comments,
+    };
+    Ok((info, image))
+}
+
+/// The output transform for `transform` under the caller's options.
+fn output_transform(
+    transform: ColorTransform,
+    luma_only: bool,
+    opts: &DecodeOptions,
+) -> ColorTransform {
+    if luma_only {
+        ColorTransform::Gray
+    } else if opts.keep_ycbcr && transform == ColorTransform::YCbCr {
+        ColorTransform::Rgb
+    } else {
+        transform
+    }
+}
+
+/// IDCT and convert a frame whose coefficients were buffered.
+fn buffered_image(
+    frame: &mut Frame,
+    transform: ColorTransform,
+    luma_only: bool,
+    opts: &DecodeOptions,
+    deadline: &Deadline,
+) -> Result<Image> {
+    let luma_only = luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
     if luma_only {
         frame.comps.truncate(1);
     }
-    if frame.buffered == Some(true) {
+    {
         for c in &mut frame.comps {
             deadline.check()?;
             let quant = c.quant.ok_or(Error::Invalid("component never scanned"))?;
@@ -359,28 +474,11 @@ pub fn decode_with(
             height: c.dh,
             h_ratio: max_h / c.h,
             v_ratio: max_v / c.v,
+            band: 0,
         })
         .collect();
-    let output = if luma_only {
-        ColorTransform::Gray
-    } else if opts.keep_ycbcr && transform == ColorTransform::YCbCr {
-        ColorTransform::Rgb
-    } else {
-        transform
-    };
-    let image = convert(&planes, output, opts.invert_cmyk, w, h, deadline)?;
-    drop(planes);
-    let info = Info {
-        icc_profile: assemble_icc(&mut icc_chunks),
-        color: transform,
-        frame: frame.info,
-        jfif,
-        adobe_transform: adobe,
-        exif,
-        xmp,
-        comments,
-    };
-    Ok((info, image))
+    let output = output_transform(transform, luma_only, opts);
+    convert(&planes, output, opts.invert_cmyk, w, h, deadline)
 }
 
 photo_core::multiversion! {
@@ -465,7 +563,15 @@ fn scan_body(
     }
     if frame.buffered.is_none() {
         let direct = !frame.progressive && ns == frame.comps.len();
-        frame.allocate(!direct, st.luma_only, limits)?;
+        let output = direct.then(|| {
+            let transform = color_transform(&frame.info, st.jfif, st.adobe);
+            let luma = st.luma_only;
+            (
+                output_transform(transform, luma, &st.opts),
+                st.opts.invert_cmyk,
+            )
+        });
+        frame.allocate(!direct, output, limits)?;
     } else if frame.buffered == Some(false) {
         return Err(Error::Invalid("extra scan in single-scan sequential JPEG"));
     }
@@ -582,9 +688,11 @@ fn scan_body(
                             if luma_only && s.index != 0 {
                                 continue;
                             }
-                            let stride = c.bw * 8;
                             let q = c.quant.as_ref().expect("latched");
-                            idct_islow(&block, q, &mut c.plane[by * 8 * stride + bx * 8..], stride);
+                            let stream = frame.stream.as_mut().expect("direct frame");
+                            let p = &mut stream.planes[s.index];
+                            let at = p.offset(by * 8) + bx * 8;
+                            idct_islow(&block, q, &mut p.data[at..], p.stride);
                         }
                     }
                 }
@@ -593,6 +701,22 @@ fn scan_body(
                 return Err(Error::Truncated);
             }
         }
+        if !buffered && uy > 0 {
+            let (w, h) = (frame.info.width as usize, frame.info.height as usize);
+            frame
+                .stream
+                .as_mut()
+                .expect("direct frame")
+                .emit(uy - 1, w, h);
+        }
+    }
+    if !buffered && units_y > 0 {
+        let (w, h) = (frame.info.width as usize, frame.info.height as usize);
+        frame
+            .stream
+            .as_mut()
+            .expect("direct frame")
+            .emit(units_y - 1, w, h);
     }
     let (m, at) = match r.finish_segment() {
         Ok(v) => v,

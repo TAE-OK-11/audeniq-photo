@@ -4,7 +4,9 @@
 use crate::markers::ColorTransform;
 use photo_core::{Deadline, Error, Image, PixelFormat, Result};
 
-/// One decoded component plane (padded to whole blocks).
+/// One decoded component plane (padded to whole blocks), either whole or a
+/// ring of three MCU-row bands (the band being converted plus its upper and
+/// lower neighbours, which fancy upsampling reads).
 pub(crate) struct Plane {
     pub data: Vec<u8>,
     pub stride: usize,
@@ -13,6 +15,8 @@ pub(crate) struct Plane {
     pub height: usize,
     pub h_ratio: usize,
     pub v_ratio: usize,
+    /// Sample rows per ring band; 0 for a whole plane.
+    pub band: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,9 +38,23 @@ fn method(p: &Plane) -> Method {
     }
 }
 
+/// Bands kept by a streaming plane.
+pub(crate) const RING: usize = 3;
+
 impl Plane {
+    /// Offset of sample row `y` in `data`.
+    #[inline(always)]
+    pub fn offset(&self, y: usize) -> usize {
+        let r = match y.checked_div(self.band) {
+            None => y,
+            Some(band) => band % RING * self.band + y % self.band,
+        };
+        r * self.stride
+    }
+
     fn row(&self, y: usize) -> &[u8] {
-        &self.data[y * self.stride..y * self.stride + self.stride]
+        let o = self.offset(y);
+        &self.data[o..o + self.stride]
     }
 
     /// Upsampled samples of output row `y` into `out` (len >= image width).
@@ -162,21 +180,58 @@ fn clamp(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
-photo_core::multiversion! {
-    /// Convert decoded planes into an interleaved image. CMYK output is
-    /// inverted as Pillow does for all CMYK JPEGs ("CMYK;I", Adobe convention).
-    pub(crate) fn convert(
+pub(crate) fn output_format(transform: ColorTransform) -> PixelFormat {
+    match transform {
+        ColorTransform::Gray => PixelFormat::Gray8,
+        ColorTransform::YCbCr | ColorTransform::Rgb => PixelFormat::Rgb8,
+        ColorTransform::Cmyk | ColorTransform::Ycck => PixelFormat::Cmyk8,
+    }
+}
+
+/// Upsampling and color conversion of output rows, any number at a time.
+pub(crate) struct Converter {
+    transform: ColorTransform,
+    /// Pillow's "CMYK;I": invert (255). PDF: as stored (0).
+    inv: u8,
+    width: usize,
+    methods: Vec<Method>,
+    rows: Vec<Vec<u8>>,
+    tmp: Vec<u8>,
+    sums: Vec<u32>,
+}
+
+impl Converter {
+    /// CMYK output is inverted as Pillow does for all CMYK JPEGs
+    /// ("CMYK;I", Adobe convention) unless `invert_cmyk` is false.
+    pub fn new(
         planes: &[Plane],
         transform: ColorTransform,
         invert_cmyk: bool,
         width: usize,
-        height: usize,
-        deadline: &Deadline,
-    ) -> Result<Image> = convert_body;
+    ) -> Result<Converter> {
+        let ch = output_format(transform).channels();
+        if planes.len() != ch {
+            return Err(Error::Unsupported("JPEG component count"));
+        }
+        Ok(Converter {
+            transform,
+            inv: if invert_cmyk { 255 } else { 0 },
+            width,
+            methods: planes.iter().map(method).collect(),
+            rows: (0..ch).map(|_| vec![0u8; width]).collect(),
+            tmp: Vec::new(),
+            sums: Vec::new(),
+        })
+    }
+
+    /// Convert output rows starting at `y0` into `out` (whole rows).
+    pub fn rows(&mut self, planes: &[Plane], y0: usize, out: &mut [u8]) {
+        convert_rows(self, planes, y0, out)
+    }
 }
 
-#[inline(always)]
-fn convert_body(
+/// Convert whole planes into an interleaved image.
+pub(crate) fn convert(
     planes: &[Plane],
     transform: ColorTransform,
     invert_cmyk: bool,
@@ -184,30 +239,45 @@ fn convert_body(
     height: usize,
     deadline: &Deadline,
 ) -> Result<Image> {
-    let format = match transform {
-        ColorTransform::Gray => PixelFormat::Gray8,
-        ColorTransform::YCbCr | ColorTransform::Rgb => PixelFormat::Rgb8,
-        ColorTransform::Cmyk | ColorTransform::Ycck => PixelFormat::Cmyk8,
-    };
-    let ch = format.channels();
-    if planes.len() != ch {
-        return Err(Error::Unsupported("JPEG component count"));
+    let format = output_format(transform);
+    let mut conv = Converter::new(planes, transform, invert_cmyk, width)?;
+    let mut data = vec![0u8; width * height * format.channels()];
+    for (i, chunk) in data.chunks_mut(64 * width * format.channels()).enumerate() {
+        deadline.check()?;
+        conv.rows(planes, i * 64, chunk);
     }
-    let methods: Vec<Method> = planes.iter().map(method).collect();
-    let mut data = vec![0u8; width * height * ch];
-    let mut rows: Vec<Vec<u8>> = (0..ch).map(|_| vec![0u8; width]).collect();
-    let (mut tmp, mut sums) = (Vec::new(), Vec::new());
+    Ok(Image {
+        width: width as u32,
+        height: height as u32,
+        format,
+        data,
+    })
+}
+
+photo_core::multiversion! {
+    fn convert_rows(conv: &mut Converter, planes: &[Plane], y0: usize, out: &mut [u8]) -> () = convert_rows_body;
+}
+
+#[inline(always)]
+fn convert_rows_body(conv: &mut Converter, planes: &[Plane], y0: usize, out: &mut [u8]) {
+    let width = conv.width;
+    let ch = conv.rows.len();
     let t = tables();
-    // Pillow's "CMYK;I": invert. PDF: as stored.
-    let inv = if invert_cmyk { 255u8 } else { 0 };
-    for (y, out) in data.chunks_exact_mut(width * ch).enumerate() {
-        if y % 64 == 0 {
-            deadline.check()?;
-        }
+    let inv = conv.inv;
+    let Converter {
+        transform,
+        methods,
+        rows,
+        tmp,
+        sums,
+        ..
+    } = conv;
+    for (i, out) in out.chunks_exact_mut(width * ch).enumerate() {
+        let y = y0 + i;
         for (c, p) in planes.iter().enumerate() {
-            p.upsample(methods[c], y, &mut rows[c], &mut tmp, &mut sums);
+            p.upsample(methods[c], y, &mut rows[c], tmp, sums);
         }
-        match transform {
+        match *transform {
             ColorTransform::Gray => out.copy_from_slice(&rows[0]),
             ColorTransform::Rgb => {
                 for x in 0..width {
@@ -237,12 +307,6 @@ fn convert_body(
             }
         }
     }
-    Ok(Image {
-        width: width as u32,
-        height: height as u32,
-        format,
-        data,
-    })
 }
 
 /// jdcolor.c `ycc_rgb_convert` with the table entries computed inline
