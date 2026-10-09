@@ -104,7 +104,6 @@ impl Unicharset {
         self.get(id).is_some_and(|u| u.props & ISDIGIT != 0)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_alpha(&self, id: i32) -> bool {
         self.get(id).is_some_and(|u| u.props & ISALPHA != 0)
     }
@@ -118,6 +117,14 @@ impl Unicharset {
     pub(crate) fn is_cased(&self, id: i32) -> bool {
         self.get(id)
             .is_some_and(|u| u.props & (ISLOWER | ISUPPER) != 0)
+    }
+
+    pub(crate) fn is_upper(&self, id: i32) -> bool {
+        self.get(id).is_some_and(|u| u.props & ISUPPER != 0)
+    }
+
+    pub(crate) fn is_lower(&self, id: i32) -> bool {
+        self.get(id).is_some_and(|u| u.props & ISLOWER != 0)
     }
 
     fn get(&self, id: i32) -> Option<&Unichar> {

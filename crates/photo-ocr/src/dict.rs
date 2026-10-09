@@ -11,7 +11,7 @@ const PATTERN_UNICHAR_ID: i32 = 0;
 // PermuterType values used here.
 pub(crate) const NO_PERM: i32 = 0;
 pub(crate) const PUNC_PERM: i32 = 1;
-pub(crate) const TOP_CHOICE_PERM: i32 = 3;
+pub(crate) const TOP_CHOICE_PERM: i32 = 2;
 pub(crate) const NUMBER_PERM: i32 = 6;
 pub(crate) const SYSTEM_DAWG_PERM: i32 = 8;
 pub(crate) const COMPOUND_PERM: i32 = 12;
@@ -243,6 +243,31 @@ impl Dict {
         }
     }
 
+    /// `Dict::valid_word(word, false)` (no hyphenated prefix).
+    pub(crate) fn valid_word(&self, set: &Unicharset, ids: &[i32]) -> i32 {
+        if ids.is_empty() {
+            return NO_PERM;
+        }
+        let mut active = self.default_dawgs();
+        let mut args = DawgArgs {
+            updated: Vec::new(),
+            permuter: NO_PERM,
+            valid_end: false,
+        };
+        let last = ids.len() - 1;
+        for (i, &id) in ids.iter().enumerate() {
+            if self.letter_is_okay(&active, &mut args, set, id, i == last) == NO_PERM {
+                break;
+            }
+            active = std::mem::take(&mut args.updated);
+        }
+        if valid_word_permuter(args.permuter) {
+            args.permuter
+        } else {
+            NO_PERM
+        }
+    }
+
     /// `Dict::default_dawgs(vec, false)`.
     pub(crate) fn default_dawgs(&self) -> Vec<DawgPosition> {
         let punc_available = self
@@ -390,4 +415,10 @@ impl Dict {
         }
         args.permuter
     }
+}
+
+/// `Dict::valid_word_permuter(perm, false)`.
+pub(crate) fn valid_word_permuter(perm: i32) -> bool {
+    // SYSTEM, DOC, USER, FREQ dawgs, user patterns and compounds.
+    matches!(perm, 7..=12)
 }

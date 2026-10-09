@@ -57,8 +57,10 @@ pub fn scale(src: &Gray, scalex: f32, scaley: f32) -> Gray {
     if scalex == 1.0 && scaley == 1.0 {
         return src.clone();
     }
-    let maxscale = scalex.max(scaley);
-    let minscale = scalex.min(scaley);
+    // Leptonica compares the float factors with double constants: a
+    // factor of exactly 0.2f is "> 0.2" (0.2f rounds up), 0.7f is "< 0.7".
+    let maxscale = f64::from(scalex.max(scaley));
+    let minscale = f64::from(scalex.min(scaley));
     let (sharpfract, sharpwidth) = if maxscale < 0.7 {
         (0.2f32, 1)
     } else {

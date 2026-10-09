@@ -2,8 +2,11 @@
 //! 5.3, Apache-2.0) for the `tessdata_fast` models the backend used
 //! (`eng`, `kor`).
 //!
-//! Stage 1 (this module): one text line → words with Tesseract's word
-//! confidences, matching `tesseract --psm 13` (raw line).
+//! [`ocr_tsv`] reproduces `tesseract <image> stdout -l eng+kor --psm 11 tsv`
+//! byte for byte: thresholding, sparse-text layout ([`page`]), textline
+//! and word segmentation, per-word LSTM recognition with language retry
+//! ([`recog`]) and the TSV report. [`Model::recognize_line`] alone matches
+//! `--psm 13` (one raw text line).
 #![forbid(unsafe_code)]
 
 mod beam;
@@ -12,6 +15,7 @@ mod lstm;
 pub mod page;
 pub mod pix;
 mod reader;
+pub mod recog;
 mod tessdata;
 mod unicharset;
 
@@ -158,6 +162,21 @@ impl Model {
     /// `GetRectImage` output) followed by `ExtractBestPathAsWords` and the
     /// `SearchWords` certainty scaling.
     pub fn recognize_line(&self, line: &Pix, rand: &mut OcrRandom) -> Vec<LineWord> {
+        let (words, scale_factor) = self.recognize_raw(line, rand);
+        words
+            .into_iter()
+            .filter(|w| !w.all_spaces)
+            .map(|w| LineWord {
+                left: (w.start_t as f32 * scale_factor).floor() as i32,
+                right: (w.end_t as f32 * scale_factor).ceil() as i32,
+                word: w,
+            })
+            .collect()
+    }
+
+    /// The decoded words of a line image (all-space words included) and
+    /// the factor from network time steps to image x.
+    pub(crate) fn recognize_raw(&self, line: &Pix, rand: &mut OcrRandom) -> (Vec<Word>, f32) {
         let rand = &mut rand.0;
         self.seeded(rand);
         let min_width = self.net.x_scale();
@@ -166,7 +185,7 @@ impl Model {
             target = (line.height() as i32).min(MAX_INPUT_HEIGHT);
         }
         if line.height() == 0 || line.width() == 0 {
-            return Vec::new();
+            return (Vec::new(), 0.0);
         }
         let im_factor = target as f32 / line.height() as f32;
         // `PreScale` scales the original (possibly colour) image; the grey
@@ -174,7 +193,7 @@ impl Model {
         let mut scaled = line.scale(im_factor, im_factor);
         let pix = scaled.to_gray();
         if (pix.width as i32) < min_width || (pix.height as i32) < min_width {
-            return Vec::new();
+            return (Vec::new(), 0.0);
         }
         let scale_factor = min_width as f32 / im_factor;
         self.seeded(rand);
@@ -198,15 +217,7 @@ impl Model {
             beam::Search::new(&self.recoder, self.null_char, self.dict.as_ref(), &self.set);
         let worst = f64::from(-25.0f32 / 7.0f32);
         search.decode(&rows, DICT_RATIO, CERT_OFFSET, worst);
-        search
-            .words()
-            .into_iter()
-            .map(|w| LineWord {
-                left: (w.start_t as f32 * scale_factor).floor() as i32,
-                right: (w.end_t as f32 * scale_factor).ceil() as i32,
-                word: w,
-            })
-            .collect()
+        (search.words(), scale_factor)
     }
 
     /// `Input::PreparePixInput` + `NetworkIO::FromPix`.
@@ -296,6 +307,50 @@ impl Model {
         let mean = ((sum as f64 / total as f64) / 127.0) as f32;
         (min, mean)
     }
+}
+
+/// `tesseract <image> stdout --psm 11 tsv` with the given languages (in
+/// `-l` order, e.g. eng then kor): sparse-text page layout, word
+/// recognition and Tesseract's TSV report.
+pub fn ocr_tsv(pix: &Pix, models: &[&Model]) -> String {
+    let blocks = page_blocks(pix);
+    let rec = recog::recognize_page(pix, &blocks, models);
+    let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
+    format!(
+        "{header}{}",
+        recog::tsv(&rec, pix.width() as i32, pix.height() as i32)
+    )
+}
+
+/// Page segmentation for sparse text (`--psm 11`): the blocks of words.
+pub fn page_blocks(pix: &Pix) -> Vec<page::wordseg::TextBlock> {
+    let mut bin = page::thresh::threshold(pix);
+    let lines = page::linefind::find_and_remove_lines(70, &mut bin);
+    let photo = page::imagefind::find_images(&bin);
+    let mut blobs = page::blobbox::Blobs::default();
+    let Some(mut tb) = page::blobbox::find_components(&bin, &mut blobs) else {
+        return Vec::new();
+    };
+    let mut resolution = 70;
+    let res = page::detlinefit::int_cast_rounded(f64::from(tb.line_size) * 10.0);
+    if res > resolution && res < 2400 {
+        resolution = res;
+    }
+    if tb.line_size < 2.0 {
+        return Vec::new();
+    }
+    let (w, h) = (bin.width as i32, bin.height as i32);
+    let mut layout = page::layout::Layout::new(
+        tb.line_size as i32,
+        page::geom::ICoord::new(0, 0),
+        page::geom::ICoord::new(w, h),
+        resolution,
+        lines.vertical_x,
+        lines.vertical_y,
+    );
+    layout.setup_and_filter_noise(&mut blobs, &photo, &mut tb);
+    let (blocks, diacritics) = layout.find_blocks(&mut blobs, &mut tb);
+    page::tordmain::textord_page(blocks, &diacritics, &mut blobs)
 }
 
 /// The recognizer's random generator; Tesseract keeps one per language

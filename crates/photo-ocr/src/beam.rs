@@ -199,6 +199,17 @@ pub struct Word {
     /// Start/end x in network time steps (scaled later).
     pub(crate) start_t: i32,
     pub(crate) end_t: i32,
+    /// Unichar ids of the word's characters.
+    pub(crate) ids: Vec<i32>,
+    /// `WERD_CHOICE::rating()`.
+    pub(crate) rating: f32,
+    /// Permuter of the last character's node.
+    pub(crate) permuter: i32,
+    /// Character boundaries (time steps): character `i` spans
+    /// `bounds[i]..bounds[i + 1]`.
+    pub(crate) bounds: Vec<i32>,
+    /// True when every character is a space (deleted after recognition).
+    pub(crate) all_spaces: bool,
 }
 
 impl<'a> Search<'a> {
@@ -943,7 +954,7 @@ impl<'a> Search<'a> {
     pub(crate) fn words(&self) -> Vec<Word> {
         let path = self.best_path();
         let nodes: Vec<&Node> = path.iter().map(|&r| self.node(r)).collect();
-        let (ids, certs, xcoords, bounds) = extract_unichar_ids(&nodes);
+        let (ids, certs, ratings, xcoords, bounds) = extract_unichar_ids(&nodes);
         let num = ids.len();
         let mut words = Vec::new();
         let mut word_end = 0;
@@ -974,29 +985,36 @@ impl<'a> Search<'a> {
             let space_certainty = space_cert.min(prev_space_cert);
             let mut text = String::new();
             let mut cert = f32::MAX;
+            let mut rating = 0.0f32;
             for i in word_start..word_end {
                 text.push_str(self.set.text(ids[i]));
                 if certs[i] < cert {
                     cert = certs[i];
                 }
+                rating += ratings[i];
             }
             let certainty = space_certainty.min(cert) * 7.0;
             let confidence = (100.0 + 5.0 * certainty).clamp(0.0, 100.0);
             let start_t = bounds.get(word_start).copied().unwrap_or(0);
             let end_t = bounds.get(word_end).copied().unwrap_or(nodes.len() as i32);
-            // `recog_all_words` deletes all-space words at the end.
-            if ids[word_start..word_end]
-                .iter()
-                .any(|&u| u != UNICHAR_SPACE)
-            {
-                words.push(Word {
-                    text,
-                    certainty,
-                    confidence,
-                    start_t,
-                    end_t,
-                });
-            }
+            let word_bounds: Vec<i32> = (word_start..=word_end)
+                .take_while(|&i| i < bounds.len())
+                .map(|i| bounds[i])
+                .collect();
+            words.push(Word {
+                text,
+                certainty,
+                confidence,
+                start_t,
+                end_t,
+                ids: ids[word_start..word_end].to_vec(),
+                rating,
+                permuter: nodes[xcoords[word_end - 1] as usize].permuter,
+                bounds: word_bounds,
+                all_spaces: ids[word_start..word_end]
+                    .iter()
+                    .all(|&u| u == UNICHAR_SPACE),
+            });
             prev_space_cert = space_cert;
             if word_end < num && ids[word_end] == UNICHAR_SPACE {
                 word_end += 1;
@@ -1039,19 +1057,23 @@ fn push_node_if_better(max_size: usize, node: Node, heap: &mut Heap<f64, Node>) 
 }
 
 /// `ExtractPathAsUnicharIds` + `calculateCharBoundaries`.
-fn extract_unichar_ids(nodes: &[&Node]) -> (Vec<i32>, Vec<f32>, Vec<i32>, Vec<i32>) {
+#[allow(clippy::type_complexity)]
+fn extract_unichar_ids(nodes: &[&Node]) -> (Vec<i32>, Vec<f32>, Vec<f32>, Vec<i32>, Vec<i32>) {
     let (mut ids, mut certs, mut xcoords) = (Vec::new(), Vec::<f32>::new(), Vec::new());
+    let mut ratings = Vec::<f32>::new();
     let (mut starts, mut ends) = (Vec::new(), Vec::new());
     let width = nodes.len();
     let mut t = 0;
     while t < width {
         let mut certainty = 0.0f64;
+        let mut rating = 0.0f64;
         while t < width && nodes[t].unichar_id == INVALID_UNICHAR_ID {
             let c = f64::from(nodes[t].certainty);
             t += 1;
             if c < certainty {
                 certainty = c;
             }
+            rating -= c;
         }
         starts.push(t as i32);
         if t < width {
@@ -1060,7 +1082,10 @@ fn extract_unichar_ids(nodes: &[&Node]) -> (Vec<i32>, Vec<f32>, Vec<i32>, Vec<i3
                 if certainty < f64::from(*certs.last().expect("non-empty")) {
                     *certs.last_mut().expect("non-empty") = certainty as f32;
                 }
+                let r = ratings.last_mut().expect("non-empty");
+                *r = (f64::from(*r) + rating) as f32;
                 certainty = 0.0;
+                rating = 0.0;
             }
             ids.push(uid);
             xcoords.push(t as i32);
@@ -1070,14 +1095,20 @@ fn extract_unichar_ids(nodes: &[&Node]) -> (Vec<i32>, Vec<f32>, Vec<i32>, Vec<i3
                 if c < certainty || (uid == UNICHAR_SPACE && nodes[t - 1].permuter == NO_PERM) {
                     certainty = c;
                 }
+                rating -= c;
                 if !(t < width && nodes[t].duplicate) {
                     break;
                 }
             }
             ends.push(t as i32);
             certs.push(certainty as f32);
-        } else if !certs.is_empty() && certainty < f64::from(*certs.last().expect("non-empty")) {
-            *certs.last_mut().expect("non-empty") = certainty as f32;
+            ratings.push(rating as f32);
+        } else if !certs.is_empty() {
+            if certainty < f64::from(*certs.last().expect("non-empty")) {
+                *certs.last_mut().expect("non-empty") = certainty as f32;
+            }
+            let r = ratings.last_mut().expect("non-empty");
+            *r = (f64::from(*r) + rating) as f32;
         }
     }
     starts.push(width as i32);
@@ -1089,5 +1120,5 @@ fn extract_unichar_ids(nodes: &[&Node]) -> (Vec<i32>, Vec<f32>, Vec<i32>, Vec<i3
     bounds.pop();
     bounds.push(width as i32);
     xcoords.push(width as i32);
-    (ids, certs, xcoords, bounds)
+    (ids, certs, ratings, xcoords, bounds)
 }
