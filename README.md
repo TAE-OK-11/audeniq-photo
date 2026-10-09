@@ -69,16 +69,29 @@ let meta = audeniq_photo::metadata_file(Path::new("master.wav"))?; // 오디오 
 
 ## 성능 요약
 
-자세한 표는 [docs/PORTING.md](docs/PORTING.md#벤치마크). 4 vCPU Xeon 2.1 GHz, 기본(x86-64) 빌드:
+자세한 표는 [docs/PORTING.md](docs/PORTING.md#벤치마크). 4 vCPU Xeon 2.1 GHz, 기본(x86-64) 빌드
+(AVX2·AVX-VNNI 경로는 실행 중 CPU를 보고 선택):
 
 | 작업 | 기존(외부 프로세스) | Rust | |
 |---|---:|---:|---|
-| 커버 종합 검사 3000px JPEG (probe+색상+출처+QR) | 700 ms / 91 MB | 152 ms / 41 MB | 4.6× |
-| 커버 종합 검사 1400px JPEG | 316 ms | 31 ms | 10× |
-| 3000px PNG 정화 | 2.60 s | 0.73 s | 3.5× |
-| 1400px JPEG(Adobe RGB) 정화 | 148 ms | 61 ms | 2.4× |
-| PDF 정화 3쪽 스캔 문서 (pdfinfo+pdftoppm+재작성) | 424 ms | 263 ms | 1.6× |
-| PDF 정화 2쪽 텍스트 문서 | 211 ms | 112 ms | 1.9× |
-| 정화 처리량(4스레드) | 6.1 files/s | 17.6 files/s | 2.9× |
+| 커버 종합 검사 3000px JPEG (probe+색상+출처+QR) | 799 ms / 91 MB | 115 ms | 6.9× |
+| 커버 종합 검사 1400px JPEG | 343 ms | 19 ms | 18× |
+| 3000px JPEG 정화 | 279 ms | 156 ms | 1.8× |
+| 3000px PNG 정화 | 2.80 s | 0.71 s | 3.9× |
+| 1400px JPEG(Adobe RGB) 정화 | 174 ms | 41 ms | 4.2× |
+| PDF 정화 3쪽 스캔 문서 (pdfinfo+pdftoppm+재작성) | 372 ms | 180 ms | 2.1× |
+| PDF 정화 2쪽 텍스트 문서 | 172 ms | 87 ms | 2.0× |
+| 정화 처리량(4스레드) | 5.9 files/s | 19.0 files/s | 3.2× |
+| OCR 52개 표지 (`tesseract -l eng+kor --psm 11`, 단일 스레드) | 23.9 s / 58 MB | 7.4 s / 45 MB | 3.2× |
 
-`-C target-cpu=x86-64-v3`(백엔드 Dockerfile의 `TARGET_CPU`) 빌드에서는 3000px JPEG 정화가 1.4×, 처리량 2.4×입니다.
+구성 요소별 최적화(같은 출력 유지):
+
+| 구성 요소 | 이전 | 이후 | 참고 |
+|---|---:|---:|---|
+| JPEG 인코딩 3000px q95 4:4:4 | 220 ms | 80 ms | libjpeg-turbo 59 ms, 바이트 동일 |
+| JPEG 디코딩 3000px | 93 ms | 77 ms | libjpeg-turbo 83 ms, 비트 동일 |
+| PNG 인코딩 3000px 사진형 | 585 ms / 12.0 MB | 220 ms / 10.7 MB | Pillow 5.1 s / 11.4 MB, 화소 동일 |
+| QR 3000px | 132 ms | 71 ms | zbar 비교 동일 |
+| OCR 표지당 (배치 분석 + 인식) | 270 ms | 142 ms | TSV 바이트 동일 |
+
+런타임 SIMD는 `AUDENIQ_PHOTO_NO_SIMD=1`(전부)과 `AUDENIQ_PHOTO_NO_VNNI=1`(AVX-VNNI만)로 끌 수 있고, 어느 경로든 결과는 같습니다.
