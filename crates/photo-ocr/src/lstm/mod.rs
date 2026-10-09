@@ -179,10 +179,15 @@ pub(crate) enum Weights {
     Int {
         rows: usize,
         cols: usize,
-        /// Rows in blocks of eight, column pairs interleaved (see
-        /// [`shape_int`]), so eight row sums accumulate side by side.
+        /// Rows in blocks of eight, columns interleaved in groups of
+        /// `group` (see [`shape_int`]), so eight row sums accumulate side
+        /// by side.
         shaped: Vec<i8>,
-        /// Bias column times 127, per row.
+        /// 2 (portable / AVX2 `vpmaddwd`) or 4 (AVX-VNNI `vpdpbusd`).
+        group: usize,
+        /// Per-row constant added to the dot product: the bias column
+        /// times 127, minus `128 * sum(row)` for the VNNI layout (whose
+        /// kernel feeds `u + 128` as unsigned bytes).
         bias: Vec<i32>,
         scales: Vec<f32>,
     },
@@ -215,11 +220,13 @@ impl Weights {
             for _ in 0..n {
                 scales.push((r.f64()? / 127.0) as f32);
             }
-            let (shaped, bias) = shape_int(rows, cols, &w);
+            let group = if simd::vnni() { 4 } else { 2 };
+            let (shaped, bias) = shape_int(rows, cols, &w, group);
             Ok(Weights::Int {
                 rows,
                 cols,
                 shaped,
+                group,
                 bias,
                 scales,
             })
@@ -246,13 +253,18 @@ impl Weights {
             rows,
             cols,
             shaped,
+            group,
             bias,
             scales,
         } = self
         else {
             unreachable!("int input to float weights")
         };
-        simd::dot_int_rows(*rows, *cols - 1, shaped, bias, scales, u, v);
+        if *group == 4 {
+            simd::dot_int_rows_vnni(*rows, *cols - 1, shaped, bias, scales, u, v);
+        } else {
+            simd::dot_int_rows(*rows, *cols - 1, shaped, bias, scales, u, v);
+        }
     }
 
     fn dot_float(&self, u: &[f32], v: &mut [f32]) {
@@ -281,25 +293,37 @@ impl Weights {
 }
 
 /// Reorder int8 weights (`rows x cols`, last column the bias) for the
-/// kernel: rows in blocks of eight (the last block zero-padded) and, per
-/// block, column pairs `k` stored as `[r0c2k, r0c2k+1, r1c2k, ...]`
-/// (16 bytes; an odd last column is paired with a zero). As Tesseract's
-/// `IntSimdMatrix` shaping: the kernel then accumulates eight rows in eight
-/// lanes and never reduces horizontally.
-fn shape_int(rows: usize, cols: usize, w: &[i8]) -> (Vec<i8>, Vec<i32>) {
+/// kernels: rows in blocks of eight (the last block zero-padded) and, per
+/// block, columns in groups of `group` stored row after row
+/// (`[r0c0, r0c1, .., r1c0, ..]`, 8 * `group` bytes, zero past the last
+/// column). As Tesseract's `IntSimdMatrix` shaping: the kernels then
+/// accumulate eight rows in eight lanes and never reduce horizontally.
+/// Returns the per-row constant term too (see `Weights::Int::bias`).
+fn shape_int(rows: usize, cols: usize, w: &[i8], group: usize) -> (Vec<i8>, Vec<i32>) {
     let ni = cols.saturating_sub(1);
-    let npairs = ni.div_ceil(2);
+    let ngroups = ni.div_ceil(group);
     let blocks = rows.div_ceil(8);
-    let mut shaped = vec![0i8; blocks * npairs * 16];
+    let mut shaped = vec![0i8; blocks * ngroups * 8 * group];
     for row in 0..rows {
         let (blk, r) = (row / 8, row % 8);
         for col in 0..ni {
-            let (k, e) = (col / 2, col % 2);
-            shaped[(blk * npairs + k) * 16 + 2 * r + e] = w[row * cols + col];
+            let (k, e) = (col / group, col % group);
+            shaped[(blk * ngroups + k) * 8 * group + group * r + e] = w[row * cols + col];
         }
     }
     let bias = (0..rows)
-        .map(|row| i32::from(w[row * cols + ni]) * 127)
+        .map(|row| {
+            let b = i32::from(w[row * cols + ni]) * 127;
+            if group == 4 {
+                let sum: i32 = w[row * cols..row * cols + ni]
+                    .iter()
+                    .map(|&x| i32::from(x))
+                    .sum();
+                b - 128 * sum
+            } else {
+                b
+            }
+        })
         .collect();
     (shaped, bias)
 }

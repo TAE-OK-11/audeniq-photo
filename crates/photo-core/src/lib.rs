@@ -325,6 +325,26 @@ pub mod cpu {
             }
         }
     }
+
+    /// x86-64-v3 plus AVX-VNNI (`vpdpbusd`: four u8 x i8 products summed
+    /// into each i32 lane, no intermediate saturation), for int8 dots.
+    /// `AUDENIQ_PHOTO_NO_VNNI` (or `AUDENIQ_PHOTO_NO_SIMD`) turns it off.
+    #[cfg(target_arch = "x86_64")]
+    pub fn x86_vnni() -> bool {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        static LEVEL: AtomicU8 = AtomicU8::new(0);
+        match LEVEL.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let yes = x86_v3()
+                    && std::arch::is_x86_feature_detected!("avxvnni")
+                    && std::env::var_os("AUDENIQ_PHOTO_NO_VNNI").is_none();
+                LEVEL.store(if yes { 2 } else { 1 }, Ordering::Relaxed);
+                yes
+            }
+        }
+    }
 }
 
 /// Define `fn $name(args) -> ret` that runs `$body(args)` compiled for
