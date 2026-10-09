@@ -47,50 +47,78 @@ fn limit(x: i32) -> u8 {
 
 /// Inverse DCT of one block (natural order, not yet dequantized) into
 /// `out` at row stride `stride`. 32-bit wrapping arithmetic, as libjpeg-turbo's
-/// SIMD paths use; zero shortcuts skip sparse columns and rows.
+/// SIMD paths use. Each pass works on eight lanes at once so it vectorizes;
+/// the zero-column/row shortcuts of jidctint.c are kept as per-lane selects,
+/// so results are identical to the scalar algorithm (overflow included).
+#[inline(always)]
 pub(crate) fn idct_islow(coef: &[i16; 64], quant: &[u16; 64], out: &mut [u8], stride: usize) {
-    let mut ws = [0i32; 64];
-    for col in 0..8 {
-        let c = |r: usize| i32::from(coef[r * 8 + col]) * i32::from(quant[r * 8 + col]);
-        if (1..8).all(|r| coef[r * 8 + col] == 0) {
-            let dc = c(0).wrapping_shl(PASS1_BITS as u32);
-            for r in 0..8 {
-                ws[r * 8 + col] = dc;
+    // DC only (common in smooth areas): every sample is the same.
+    if coef[1..].iter().all(|&c| c == 0) {
+        let dc = (i32::from(coef[0]) * i32::from(quant[0])).wrapping_shl(PASS1_BITS as u32);
+        let v = limit(descale(dc, PASS1_BITS + 3));
+        for row in 0..8 {
+            out[row * stride..row * stride + 8].fill(v);
+        }
+        return;
+    }
+    // Pass 1: lane = column, input k = row k.
+    let mut p = [[0i32; 8]; 8];
+    let mut zero = [true; 8];
+    for r in 0..8 {
+        for c in 0..8 {
+            p[r][c] = i32::from(coef[r * 8 + c]) * i32::from(quant[r * 8 + c]);
+            if r > 0 {
+                zero[c] &= coef[r * 8 + c] == 0;
             }
-            continue;
         }
-        let (tmp10, tmp11, tmp12, tmp13) = even(c(0), c(2), c(4), c(6));
-        let (t0, t1, t2, t3) = odd(c(7), c(5), c(3), c(1));
-        let n = CONST_BITS - PASS1_BITS;
-        ws[col] = descale(tmp10.wrapping_add(t3), n);
-        ws[56 + col] = descale(tmp10.wrapping_sub(t3), n);
-        ws[8 + col] = descale(tmp11.wrapping_add(t2), n);
-        ws[48 + col] = descale(tmp11.wrapping_sub(t2), n);
-        ws[16 + col] = descale(tmp12.wrapping_add(t1), n);
-        ws[40 + col] = descale(tmp12.wrapping_sub(t1), n);
-        ws[24 + col] = descale(tmp13.wrapping_add(t0), n);
-        ws[32 + col] = descale(tmp13.wrapping_sub(t0), n);
     }
-    let n = CONST_BITS + PASS1_BITS + 3;
+    let o = pass(&p, CONST_BITS - PASS1_BITS);
+    let mut ws = [[0i32; 8]; 8];
+    for r in 0..8 {
+        for c in 0..8 {
+            let flat = p[0][c].wrapping_shl(PASS1_BITS as u32);
+            ws[r][c] = if zero[c] { flat } else { o[r][c] };
+        }
+    }
+    // Pass 2: lane = row, input k = column k (transpose).
+    let mut p = [[0i32; 8]; 8];
+    let mut zero = [true; 8];
+    for k in 0..8 {
+        for r in 0..8 {
+            p[k][r] = ws[r][k];
+            if k > 0 {
+                zero[r] &= ws[r][k] == 0;
+            }
+        }
+    }
+    let o = pass(&p, CONST_BITS + PASS1_BITS + 3);
     for row in 0..8 {
-        let w = &ws[row * 8..row * 8 + 8];
-        let o = &mut out[row * stride..row * stride + 8];
-        if w[1..].iter().all(|&v| v == 0) {
-            o.fill(limit(descale(w[0], PASS1_BITS + 3)));
-            continue;
+        let dst = &mut out[row * stride..row * stride + 8];
+        let flat = descale(ws[row][0], PASS1_BITS + 3);
+        for k in 0..8 {
+            dst[k] = limit(if zero[row] { flat } else { o[k][row] });
         }
-        let w = |i: usize| w[i];
-        let (tmp10, tmp11, tmp12, tmp13) = even(w(0), w(2), w(4), w(6));
-        let (t0, t1, t2, t3) = odd(w(7), w(5), w(3), w(1));
-        o[0] = limit(descale(tmp10.wrapping_add(t3), n));
-        o[7] = limit(descale(tmp10.wrapping_sub(t3), n));
-        o[1] = limit(descale(tmp11.wrapping_add(t2), n));
-        o[6] = limit(descale(tmp11.wrapping_sub(t2), n));
-        o[2] = limit(descale(tmp12.wrapping_add(t1), n));
-        o[5] = limit(descale(tmp12.wrapping_sub(t1), n));
-        o[3] = limit(descale(tmp13.wrapping_add(t0), n));
-        o[4] = limit(descale(tmp13.wrapping_sub(t0), n));
     }
+}
+
+/// One 1-D IDCT over eight lanes: `p[k]` is input k of every lane; the
+/// result is descaled by `n` (output k of every lane).
+#[inline(always)]
+fn pass(p: &[[i32; 8]; 8], n: i32) -> [[i32; 8]; 8] {
+    let mut o = [[0i32; 8]; 8];
+    for l in 0..8 {
+        let (tmp10, tmp11, tmp12, tmp13) = even(p[0][l], p[2][l], p[4][l], p[6][l]);
+        let (t0, t1, t2, t3) = odd(p[7][l], p[5][l], p[3][l], p[1][l]);
+        o[0][l] = descale(tmp10.wrapping_add(t3), n);
+        o[7][l] = descale(tmp10.wrapping_sub(t3), n);
+        o[1][l] = descale(tmp11.wrapping_add(t2), n);
+        o[6][l] = descale(tmp11.wrapping_sub(t2), n);
+        o[2][l] = descale(tmp12.wrapping_add(t1), n);
+        o[5][l] = descale(tmp12.wrapping_sub(t1), n);
+        o[3][l] = descale(tmp13.wrapping_add(t0), n);
+        o[4][l] = descale(tmp13.wrapping_sub(t0), n);
+    }
+    o
 }
 
 #[inline(always)]

@@ -40,6 +40,7 @@ impl Plane {
     }
 
     /// Upsampled samples of output row `y` into `out` (len >= image width).
+    #[inline(always)]
     fn upsample(
         &self,
         m: Method,
@@ -85,6 +86,7 @@ impl Plane {
     }
 }
 
+#[inline(always)]
 fn h2v1(inp: &[u8], dw: usize, out: &mut [u8], tmp: &mut Vec<u8>) {
     tmp.resize(2 * dw, 0);
     let t = &mut tmp[..2 * dw];
@@ -103,6 +105,7 @@ fn h2v1(inp: &[u8], dw: usize, out: &mut [u8], tmp: &mut Vec<u8>) {
     out.copy_from_slice(&t[..w]);
 }
 
+#[inline(always)]
 fn h2v2(in0: &[u8], in1: &[u8], dw: usize, out: &mut [u8], tmp: &mut Vec<u8>, sums: &mut Vec<u32>) {
     sums.resize(dw, 0);
     for (s, (&a, &b)) in sums.iter_mut().zip(in0[..dw].iter().zip(&in1[..dw])) {
@@ -159,9 +162,21 @@ fn clamp(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
-/// Convert decoded planes into an interleaved image. CMYK output is
-/// inverted as Pillow does for all CMYK JPEGs ("CMYK;I", Adobe convention).
-pub(crate) fn convert(
+photo_core::multiversion! {
+    /// Convert decoded planes into an interleaved image. CMYK output is
+    /// inverted as Pillow does for all CMYK JPEGs ("CMYK;I", Adobe convention).
+    pub(crate) fn convert(
+        planes: &[Plane],
+        transform: ColorTransform,
+        invert_cmyk: bool,
+        width: usize,
+        height: usize,
+        deadline: &Deadline,
+    ) -> Result<Image> = convert_body;
+}
+
+#[inline(always)]
+fn convert_body(
     planes: &[Plane],
     transform: ColorTransform,
     invert_cmyk: bool,
@@ -232,6 +247,7 @@ pub(crate) fn convert(
 
 /// jdcolor.c `ycc_rgb_convert` with the table entries computed inline
 /// (identical integers; branch-free so it vectorizes).
+#[inline(always)]
 fn ycc_row(ys: &[u8], cbs: &[u8], crs: &[u8], out: &mut [u8]) {
     const CR_R: i32 = 91881; // FIX(1.40200)
     const CB_B: i32 = 116130; // FIX(1.77200)

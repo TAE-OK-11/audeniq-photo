@@ -6,7 +6,8 @@
 //! decoded pixels match Pillow bit for bit on baseline and progressive files.
 //! The encoder is a port of the IJG baseline encoder (`jcdctmgr.c`,
 //! `jfdctint.c`, standard Huffman tables, `jpeg_quality_scaling`).
-#![forbid(unsafe_code)]
+// Only the call into the AVX2 build of the hot loops is `unsafe`.
+#![deny(unsafe_code)]
 
 mod color;
 mod decoder;

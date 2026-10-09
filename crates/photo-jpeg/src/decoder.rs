@@ -343,23 +343,8 @@ pub fn decode_with(
         for c in &mut frame.comps {
             deadline.check()?;
             let quant = c.quant.ok_or(Error::Invalid("component never scanned"))?;
-            let stride = c.bw * 8;
-            let mut plane = vec![0u8; c.bw * c.bh * 64];
-            let mut block = [0i16; 64];
-            for by in 0..c.bh {
-                for bx in 0..c.bw {
-                    let i = (by * c.bw + bx) * 64;
-                    block.copy_from_slice(&c.coefs[i..i + 64]);
-                    idct_islow(
-                        &block,
-                        &quant,
-                        &mut plane[by * 8 * stride + bx * 8..],
-                        stride,
-                    );
-                }
-            }
+            c.plane = idct_plane(&c.coefs, &quant, c.bw, c.bh);
             c.coefs = Vec::new();
-            c.plane = plane;
         }
     }
     let (w, h) = (frame.info.width as usize, frame.info.height as usize);
@@ -398,8 +383,37 @@ pub fn decode_with(
     Ok((info, image))
 }
 
-/// Decode one scan. Returns the offset to continue marker parsing from.
-fn scan(
+photo_core::multiversion! {
+    /// Inverse DCT of a whole buffered (progressive) component.
+    fn idct_plane(coefs: &[i16], quant: &[u16; 64], bw: usize, bh: usize) -> Vec<u8> = idct_plane_body;
+}
+
+#[inline(always)]
+fn idct_plane_body(coefs: &[i16], quant: &[u16; 64], bw: usize, bh: usize) -> Vec<u8> {
+    let stride = bw * 8;
+    let mut plane = vec![0u8; bw * bh * 64];
+    for (i, block) in coefs.chunks_exact(64).enumerate() {
+        let (by, bx) = (i / bw, i % bw);
+        let block: &[i16; 64] = block.try_into().expect("64");
+        idct_islow(block, quant, &mut plane[by * 8 * stride + bx * 8..], stride);
+    }
+    plane
+}
+
+photo_core::multiversion! {
+    /// Decode one scan. Returns the offset to continue marker parsing from.
+    fn scan(
+        data: &[u8],
+        header: &[u8],
+        start: usize,
+        st: &mut State,
+        limits: &Limits,
+        deadline: &Deadline,
+    ) -> Result<usize> = scan_body;
+}
+
+#[inline(always)]
+fn scan_body(
     data: &[u8],
     header: &[u8],
     start: usize,
@@ -589,6 +603,7 @@ fn scan(
     Ok(at)
 }
 
+#[inline(always)]
 fn sequential(
     r: &mut BitReader,
     dc: &HuffTable,
@@ -627,6 +642,7 @@ fn sequential(
     Ok(())
 }
 
+#[inline(always)]
 fn ac_first(
     r: &mut BitReader,
     t: &HuffTable,
@@ -663,6 +679,7 @@ fn ac_first(
     Ok(())
 }
 
+#[inline(always)]
 fn ac_refine(
     r: &mut BitReader,
     t: &HuffTable,

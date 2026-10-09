@@ -298,3 +298,60 @@ mod tests {
         assert_eq!(cmyk_to_rgb([255, 0, 0, 0]), [0, 255, 255]);
     }
 }
+
+/// Run-time CPU feature levels for the hot loops.
+pub mod cpu {
+    /// x86-64-v3 (AVX2, BMI1/2, LZCNT, POPCNT, FMA). Hot loops keep a copy
+    /// compiled for it (see [`multiversion!`](crate::multiversion)), chosen
+    /// at run time, so the default build stays portable. Setting
+    /// `AUDENIQ_PHOTO_NO_SIMD` forces the baseline code.
+    #[cfg(target_arch = "x86_64")]
+    pub fn x86_v3() -> bool {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        static LEVEL: AtomicU8 = AtomicU8::new(0);
+        match LEVEL.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let yes = std::arch::is_x86_feature_detected!("avx2")
+                    && std::arch::is_x86_feature_detected!("bmi1")
+                    && std::arch::is_x86_feature_detected!("bmi2")
+                    && std::arch::is_x86_feature_detected!("lzcnt")
+                    && std::arch::is_x86_feature_detected!("popcnt")
+                    && std::arch::is_x86_feature_detected!("fma")
+                    && std::env::var_os("AUDENIQ_PHOTO_NO_SIMD").is_none();
+                LEVEL.store(if yes { 2 } else { 1 }, Ordering::Relaxed);
+                yes
+            }
+        }
+    }
+}
+
+/// Define `fn $name(args) -> ret` that runs `$body(args)` compiled for
+/// x86-64-v3 when the CPU has it, else the baseline build. `$body` (and
+/// what it calls) should be `#[inline(always)]` so it is compiled into
+/// each copy. The calling crate must not `forbid(unsafe_code)`: the one
+/// call into the feature-gated copy is `unsafe`.
+#[macro_export]
+macro_rules! multiversion {
+    ($(#[$m:meta])* $vis:vis fn $name:ident $(<$($g:tt),*>)? ($($arg:ident : $ty:ty),* $(,)?) -> $ret:ty = $body:path;) => {
+        $(#[$m])*
+        $vis fn $name $(<$($g),*>)? ($($arg: $ty),*) -> $ret {
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[target_feature(enable = "avx2,bmi1,bmi2,lzcnt,popcnt,fma")]
+                fn v3 $(<$($g),*>)? ($($arg: $ty),*) -> $ret {
+                    $body($($arg),*)
+                }
+                if $crate::cpu::x86_v3() {
+                    // SAFETY: the CPU has every feature `v3` is compiled
+                    // for (checked just above), the only requirement of
+                    // calling it.
+                    #[allow(unsafe_code)]
+                    return unsafe { v3($($arg),*) };
+                }
+            }
+            $body($($arg),*)
+        }
+    };
+}

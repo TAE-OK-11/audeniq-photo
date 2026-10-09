@@ -110,90 +110,77 @@ const PASS1_BITS: i32 = 2;
 
 /// `jpeg_fdct_islow` (natural order in and out, output scaled by 8), on
 /// eight lanes at a time so it vectorizes; integer results are identical.
-fn fdct_islow(d: &mut [i32; 64]) {
-    type L = [i32; 8];
+#[inline(always)]
+fn fdct_islow(d: &[[i32; 8]; 8]) -> [[i32; 8]; 8] {
+    /// One 1-D pass over eight lanes: `p[k]` is input sample k of every
+    /// lane; returns output k of every lane.
     #[inline(always)]
-    fn f(a: L, b: L, op: fn(i32, i32) -> i32) -> L {
-        std::array::from_fn(|i| op(a[i], b[i]))
-    }
-    #[inline(always)]
-    fn add(a: L, b: L) -> L {
-        f(a, b, |x, y| x + y)
-    }
-    #[inline(always)]
-    fn sub(a: L, b: L) -> L {
-        f(a, b, |x, y| x - y)
-    }
-    #[inline(always)]
-    fn mul(a: L, k: i32) -> L {
-        std::array::from_fn(|i| a[i] * k)
-    }
-    #[inline(always)]
-    fn ds(a: L, n: i32) -> L {
-        std::array::from_fn(|i| (a[i] + (1 << (n - 1))) >> n)
-    }
-    /// One 1-D pass: `p[k]` is input sample k for every lane.
-    #[inline(always)]
-    fn pass(p: [L; 8], first: bool) -> [L; 8] {
-        let tmp0 = add(p[0], p[7]);
-        let tmp7 = sub(p[0], p[7]);
-        let tmp1 = add(p[1], p[6]);
-        let tmp6 = sub(p[1], p[6]);
-        let tmp2 = add(p[2], p[5]);
-        let tmp5 = sub(p[2], p[5]);
-        let tmp3 = add(p[3], p[4]);
-        let tmp4 = sub(p[3], p[4]);
-        let tmp10 = add(tmp0, tmp3);
-        let tmp13 = sub(tmp0, tmp3);
-        let tmp11 = add(tmp1, tmp2);
-        let tmp12 = sub(tmp1, tmp2);
+    fn pass(p: &[[i32; 8]; 8], first: bool) -> [[i32; 8]; 8] {
         let n = if first {
             CONST_BITS - PASS1_BITS
         } else {
             CONST_BITS + PASS1_BITS
         };
-        let (o0, o4) = if first {
-            (
-                std::array::from_fn(|i| (tmp10[i] + tmp11[i]) << PASS1_BITS),
-                std::array::from_fn(|i| (tmp10[i] - tmp11[i]) << PASS1_BITS),
-            )
-        } else {
-            (
-                ds(add(tmp10, tmp11), PASS1_BITS),
-                ds(sub(tmp10, tmp11), PASS1_BITS),
-            )
-        };
-        let z1 = mul(add(tmp12, tmp13), 4433);
-        let o2 = ds(add(z1, mul(tmp13, 6270)), n);
-        let o6 = ds(add(z1, mul(tmp12, -15137)), n);
-        let z1 = add(tmp4, tmp7);
-        let z2 = add(tmp5, tmp6);
-        let z3 = add(tmp4, tmp6);
-        let z4 = add(tmp5, tmp7);
-        let z5 = mul(add(z3, z4), 9633);
-        let tmp4 = mul(tmp4, 2446);
-        let tmp5 = mul(tmp5, 16819);
-        let tmp6 = mul(tmp6, 25172);
-        let tmp7 = mul(tmp7, 12299);
-        let z1 = mul(z1, -7373);
-        let z2 = mul(z2, -20995);
-        let z3 = add(mul(z3, -16069), z5);
-        let z4 = add(mul(z4, -3196), z5);
-        let o7 = ds(add(add(tmp4, z1), z3), n);
-        let o5 = ds(add(add(tmp5, z2), z4), n);
-        let o3 = ds(add(add(tmp6, z2), z3), n);
-        let o1 = ds(add(add(tmp7, z1), z4), n);
-        [o0, o1, o2, o3, o4, o5, o6, o7]
+        let ds = |x: i32, n: i32| (x + (1 << (n - 1))) >> n;
+        let mut o = [[0i32; 8]; 8];
+        for l in 0..8 {
+            let tmp0 = p[0][l] + p[7][l];
+            let tmp7 = p[0][l] - p[7][l];
+            let tmp1 = p[1][l] + p[6][l];
+            let tmp6 = p[1][l] - p[6][l];
+            let tmp2 = p[2][l] + p[5][l];
+            let tmp5 = p[2][l] - p[5][l];
+            let tmp3 = p[3][l] + p[4][l];
+            let tmp4 = p[3][l] - p[4][l];
+            let tmp10 = tmp0 + tmp3;
+            let tmp13 = tmp0 - tmp3;
+            let tmp11 = tmp1 + tmp2;
+            let tmp12 = tmp1 - tmp2;
+            if first {
+                o[0][l] = (tmp10 + tmp11) << PASS1_BITS;
+                o[4][l] = (tmp10 - tmp11) << PASS1_BITS;
+            } else {
+                o[0][l] = ds(tmp10 + tmp11, PASS1_BITS);
+                o[4][l] = ds(tmp10 - tmp11, PASS1_BITS);
+            }
+            let z1 = (tmp12 + tmp13) * 4433;
+            o[2][l] = ds(z1 + tmp13 * 6270, n);
+            o[6][l] = ds(z1 + tmp12 * -15137, n);
+            let z1 = tmp4 + tmp7;
+            let z2 = tmp5 + tmp6;
+            let z3 = tmp4 + tmp6;
+            let z4 = tmp5 + tmp7;
+            let z5 = (z3 + z4) * 9633;
+            let tmp4 = tmp4 * 2446;
+            let tmp5 = tmp5 * 16819;
+            let tmp6 = tmp6 * 25172;
+            let tmp7 = tmp7 * 12299;
+            let z1 = z1 * -7373;
+            let z2 = z2 * -20995;
+            let z3 = z3 * -16069 + z5;
+            let z4 = z4 * -3196 + z5;
+            o[7][l] = ds(tmp4 + z1 + z3, n);
+            o[5][l] = ds(tmp5 + z2 + z4, n);
+            o[3][l] = ds(tmp6 + z2 + z3, n);
+            o[1][l] = ds(tmp7 + z1 + z4, n);
+        }
+        o
     }
     // Pass 1 (rows): lane = row, input k = column k.
-    let cols: [L; 8] = std::array::from_fn(|k| std::array::from_fn(|r| d[r * 8 + k]));
-    let h = pass(cols, true);
-    // Pass 2 (columns): lane = horizontal frequency, input r = row r.
-    let rows: [L; 8] = std::array::from_fn(|r| std::array::from_fn(|u| h[u][r]));
-    let v = pass(rows, false);
-    for (vf, lane) in v.iter().enumerate() {
-        d[vf * 8..vf * 8 + 8].copy_from_slice(lane);
+    let mut p = [[0i32; 8]; 8];
+    for r in 0..8 {
+        for k in 0..8 {
+            p[k][r] = d[r][k];
+        }
     }
+    let h = pass(&p, true);
+    // Pass 2 (columns): lane = horizontal frequency, input r = row r.
+    for r in 0..8 {
+        for u in 0..8 {
+            p[r][u] = h[u][r];
+        }
+    }
+    pass(&p, false)
 }
 
 struct HuffCodes {
@@ -230,10 +217,7 @@ impl BitWriter {
     /// Append `n <= 32` bits (MSB first) with 0xFF byte stuffing.
     #[inline(always)]
     fn put(&mut self, bits: u32, n: u32) {
-        if n == 0 {
-            return;
-        }
-        // Callers pass `bits` already confined to `n` bits.
+        // `n` is never 0 (every symbol has a Huffman code). Callers pass `bits` already confined to `n` bits.
         self.buf = (self.buf << n) | u64::from(bits);
         self.n += n;
         if self.n >= 32 {
@@ -273,7 +257,9 @@ impl BitWriter {
 
 struct Comp {
     qt: [u16; 64],
-    recips: [Recip; 64],
+    recip: [u32; 64],
+    corr: [u32; 64],
+    shift: [u32; 64],
     dc: HuffCodes,
     ac: HuffCodes,
     pred: i32,
@@ -295,6 +281,12 @@ impl Encoder {
     }
 
     pub fn encode(&self, img: &Image) -> Result<Vec<u8>> {
+        encode_any(self, img)
+    }
+
+    /// The whole encoder, inlined into each instruction-set variant.
+    #[inline(always)]
+    fn encode_body(&self, img: &Image) -> Result<Vec<u8>> {
         let gray = match img.format {
             PixelFormat::Gray8 => true,
             PixelFormat::Rgb8 => false,
@@ -361,7 +353,9 @@ impl Encoder {
         out.extend_from_slice(&[0, 63, 0]);
 
         let mk = |qt: [u16; 64], dcb: &[u8; 16], acb: &[u8; 16], acv: &[u8]| Comp {
-            recips: std::array::from_fn(|i| reciprocal(u32::from(qt[i]) * 8)),
+            recip: std::array::from_fn(|i| reciprocal(u32::from(qt[i]) * 8).recip),
+            corr: std::array::from_fn(|i| reciprocal(u32::from(qt[i]) * 8).corr),
+            shift: std::array::from_fn(|i| reciprocal(u32::from(qt[i]) * 8).shift),
             qt,
             dc: huff_codes(dcb, &DC_VALS),
             ac: huff_codes(acb, acv),
@@ -468,6 +462,7 @@ impl Encoder {
 
 /// jccolor.c `rgb_ycc_convert` with its table entries expanded into the
 /// same integer products (FIX() constants), so it vectorizes.
+#[inline(always)]
 fn rgb_to_ycc(src: &[u8], y: &mut [u8], cb: &mut [u8], cr: &mut [u8]) {
     const HALF: i32 = 1 << 15;
     const OFF: i32 = (128 << 16) + HALF - 1;
@@ -479,6 +474,7 @@ fn rgb_to_ycc(src: &[u8], y: &mut [u8], cb: &mut [u8], cr: &mut [u8]) {
     }
 }
 
+#[inline(always)]
 fn encode_block(
     bw: &mut BitWriter,
     c: &mut Comp,
@@ -487,27 +483,28 @@ fn encode_block(
     x0: usize,
     y0: usize,
 ) -> i32 {
-    let mut d = [0i32; 64];
+    let mut d = [[0i32; 8]; 8];
     for y in 0..8 {
+        let row: &[u8; 8] = plane[(y0 + y) * stride + x0..][..8].try_into().expect("8");
         for x in 0..8 {
-            d[y * 8 + x] = i32::from(plane[(y0 + y) * stride + x0 + x]) - 128;
+            d[y][x] = i32::from(row[x]) - 128;
         }
     }
-    fdct_islow(&mut d);
+    let d = fdct_islow(&d);
     // Branch-free reciprocal quantization (vectorizes; divisors are >= 8).
     let mut q = [0i32; 64];
     for i in 0..64 {
-        let r = c.recips[i];
-        let d = d[i];
+        let d = d[i / 8][i % 8];
         let sign = d >> 31;
         let mag = ((d ^ sign) - sign) as u32;
-        let v = (((mag + r.corr) * r.recip) >> r.shift) as i32;
+        let v = (((mag + c.corr[i]) * c.recip[i]) >> c.shift[i]) as i32;
         q[i] = (v ^ sign) - sign;
     }
     emit(bw, c, &q);
     q[0]
 }
 
+#[inline(always)]
 fn encode_dc_only(bw: &mut BitWriter, c: &mut Comp, dc: i32) -> i32 {
     let mut q = [0i32; 64];
     q[0] = dc;
@@ -515,6 +512,7 @@ fn encode_dc_only(bw: &mut BitWriter, c: &mut Comp, dc: i32) -> i32 {
     dc
 }
 
+#[inline(always)]
 fn emit(bw: &mut BitWriter, c: &mut Comp, q: &[i32; 64]) {
     // DC
     let diff = q[0] - c.pred;
@@ -530,7 +528,7 @@ fn emit(bw: &mut BitWriter, c: &mut Comp, q: &[i32; 64]) {
     let mut zz = [0i32; 64];
     let mut mask = 0u64;
     for k in 1..64 {
-        let v = q[ZIGZAG[k]];
+        let v = q[ZIGZAG[k] & 63];
         zz[k] = v;
         mask |= u64::from(v != 0) << k;
     }
@@ -554,15 +552,17 @@ fn emit(bw: &mut BitWriter, c: &mut Comp, q: &[i32; 64]) {
     }
 }
 
-#[inline]
+/// JPEG magnitude category and its low bits (one's complement for
+/// negatives), branch-free; `(0, 0)` for zero.
+#[inline(always)]
 fn magnitude(v: i32) -> (u32, u32) {
-    if v == 0 {
-        return (0, 0);
-    }
-    let a = v.unsigned_abs();
-    let nbits = 32 - a.leading_zeros();
-    let bits = if v < 0 { (v - 1) as u32 } else { v as u32 };
-    (nbits, bits & ((1 << nbits) - 1))
+    let nbits = 32 - v.unsigned_abs().leading_zeros();
+    let bits = (v + (v >> 31)) as u32;
+    (nbits, bits & ((1u64 << nbits) - 1) as u32)
+}
+
+photo_core::multiversion! {
+    fn encode_any(e: &Encoder, img: &Image) -> Result<Vec<u8>> = Encoder::encode_body;
 }
 
 /// Encode with the given quality and chroma subsampling.
