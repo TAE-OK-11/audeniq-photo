@@ -307,7 +307,6 @@ fn fangle(x: f32, y: f32) -> f64 {
 
 /// `BaselineRow`.
 struct BaselineRow {
-    bounding_box: TBox,
     fitter: DetLineFit,
     pt1: (f32, f32),
     pt2: (f32, f32),
@@ -320,13 +319,8 @@ struct BaselineRow {
 }
 
 impl BaselineRow {
-    fn new(line_spacing: f64, row: &ToRow, blobs: &Blobs) -> BaselineRow {
-        let mut bbox = TBox::default();
-        for id in row.blobs.to_vec() {
-            bbox.union_with(&blobs.get(id).bbox);
-        }
+    fn new(line_spacing: f64) -> BaselineRow {
         BaselineRow {
-            bounding_box: bbox,
             fitter: DetLineFit::new(),
             pt1: (0.0, 0.0),
             pt2: (0.0, 0.0),
@@ -489,7 +483,7 @@ pub fn baseline_detect(blocks: &mut [ToBlk], blobs: &mut Blobs) {
         for row in &mut block.rows {
             row.blobs
                 .sort_by(|&a, &b| blobs.get(a).bbox.left.cmp(&blobs.get(b).bbox.left));
-            brows.push(BaselineRow::new(f64::from(block.line_spacing), row, blobs));
+            brows.push(BaselineRow::new(f64::from(block.line_spacing)));
         }
         rows.push(brows);
     }
@@ -1010,6 +1004,8 @@ fn find_textlines(row: &mut ToRow, line_size: f32, block_box: TBox, blobs: &mut 
     compute_row_xheight(row, line_m, line_size as i32, blobs);
 }
 
+// Branches mirror the C++ conditions one for one.
+#[allow(clippy::if_same_then_else)]
 /// `get_blob_coords`: returns (x-height guess, holed, blob count).
 fn get_blob_coords(
     row: &ToRow,
@@ -1247,8 +1243,7 @@ fn choose_partition(
         *lastdelta = 0.0;
     }
     let mut delta = diff - partdiffs[lastpart as usize] - *drift;
-    let bestpart;
-    if delta.abs() > jumplimit / 2.0 {
+    let bestpart = if delta.abs() > jumplimit / 2.0 {
         let mut bestdelta = diff - partdiffs[0] - *drift;
         let mut bp = 0usize;
         for (partition, &pd) in partdiffs.iter().enumerate().take(*partcount).skip(1) {
@@ -1265,10 +1260,10 @@ fn choose_partition(
             partdiffs[bp] = diff - *drift;
             delta = 0.0;
         }
-        bestpart = bp as i32;
+        bp as i32
     } else {
-        bestpart = lastpart;
-    }
+        lastpart
+    };
     if bestpart == lastpart
         && ((delta - *lastdelta).abs() < jumplimit / 2.0 || delta.abs() < jumplimit / 2.0)
     {

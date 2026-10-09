@@ -1945,7 +1945,8 @@ struct BreakState {
     prev_gap_was_a_space: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+// Branches mirror the C++ heuristics one for one.
+#[allow(clippy::too_many_arguments, clippy::if_same_then_else)]
 fn make_a_word_break(
     row: &ToRow,
     blob_box: &TBox,

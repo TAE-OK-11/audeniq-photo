@@ -281,7 +281,11 @@ fn transfer_diacritics(diacritics: &EList<BlobId>, blocks: &mut [TextBlock], blo
         for (ri, r) in b.rows.iter().enumerate() {
             for (wi, w) in r.words.iter().enumerate() {
                 refs.push((bi, ri, wi));
-                boxes.push(w.bounding_box());
+                // WordWithBox pads the box by its height all round.
+                let mut b = w.bounding_box();
+                let h = b.height();
+                b.pad(h, h);
+                boxes.push(b);
             }
         }
     }
