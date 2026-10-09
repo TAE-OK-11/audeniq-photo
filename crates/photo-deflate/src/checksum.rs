@@ -45,6 +45,11 @@ pub fn adler32(data: &[u8]) -> u32 {
     crate::engine::adler32::adler32(1, data)
 }
 
+/// Adler-32 of `A ++ B` from the checksums of `A` and `B` (`len_b` bytes).
+pub fn adler32_combine(adler_a: u32, adler_b: u32, len_b: u64) -> u32 {
+    crate::engine::adler32::adler32_combine(adler_a, adler_b, len_b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

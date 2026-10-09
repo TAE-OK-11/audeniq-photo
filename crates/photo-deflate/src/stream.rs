@@ -258,6 +258,15 @@ fn take_deflate(level: Level, zlib: bool, strategy: Strategy) -> DeflateState {
     }
 }
 
+impl Tuning {
+    fn strategy(self) -> Strategy {
+        match self {
+            Tuning::Default => Strategy::Default,
+            Tuning::Image => Strategy::Image,
+        }
+    }
+}
+
 /// Match-finding policy of a [`Compressor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tuning {
@@ -304,14 +313,53 @@ impl Compressor {
 
     /// zlib-wrapped stream with the given [`Tuning`].
     pub fn zlib_tuned(level: Level, tuning: Tuning) -> Self {
-        let strategy = match tuning {
-            Tuning::Default => Strategy::Default,
-            Tuning::Image => Strategy::Image,
-        };
         Compressor {
-            st: Some(take_deflate(level, true, strategy)),
+            st: Some(take_deflate(level, true, tuning.strategy())),
             zlib: true,
         }
+    }
+
+    /// One piece of a zlib stream compressed as independent pieces (pigz
+    /// style, so pieces can be compressed in parallel). The first piece
+    /// writes the zlib header; later ones are raw DEFLATE primed with
+    /// `dictionary`, the input just before them (only the last 32 KiB
+    /// matter). End every piece but the last with
+    /// [`Compressor::end_piece`] (byte-aligned, stream left open) and the
+    /// last with [`Compressor::finish_piece`]; concatenated, followed by
+    /// [`zlib_trailer`] of the whole input, they form one zlib stream.
+    pub fn zlib_piece(level: Level, tuning: Tuning, first: bool, dictionary: &[u8]) -> Self {
+        let mut st = take_deflate(level, first, tuning.strategy());
+        if !first && !dictionary.is_empty() {
+            let window = &dictionary[dictionary.len().saturating_sub(32 * 1024)..];
+            let code = deflate::set_dictionary(&mut st.0, window);
+            assert!(
+                code == ReturnCode::Ok,
+                "fresh deflate state takes a dictionary"
+            );
+        }
+        Compressor {
+            st: Some(st),
+            zlib: first,
+        }
+    }
+
+    /// End a piece that is not the last: flush to a byte boundary without
+    /// ending the stream.
+    pub fn end_piece(mut self, out: &mut Vec<u8>) {
+        self.pump(&[], DeflateFlush::SyncFlush, out);
+        self.recycle();
+    }
+
+    /// End the last piece (final block; the caller appends the trailer).
+    pub fn finish_piece(self, out: &mut Vec<u8>) {
+        assert!(!self.zlib, "the last piece is not the first");
+        self.finish(out);
+    }
+
+    fn recycle(&mut self) {
+        let st = self.st.take().expect("compressor is live");
+        let zlib = self.zlib;
+        DEFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)] = Some(st));
     }
 
     fn pump(&mut self, mut input: &[u8], flush: DeflateFlush, out: &mut Vec<u8>) {
@@ -363,10 +411,14 @@ impl Compressor {
     /// Finish the stream (final block and zlib trailer).
     pub fn finish(mut self, out: &mut Vec<u8>) {
         self.pump(&[], DeflateFlush::Finish, out);
-        let st = self.st.take().expect("compressor is live");
-        let zlib = self.zlib;
-        DEFLATE_POOL.with(|p| p.borrow_mut()[usize::from(zlib)] = Some(st));
+        self.recycle();
     }
+}
+
+/// The zlib trailer for input with Adler-32 `adler` (see
+/// [`Compressor::zlib_piece`] and [`adler32_combine`]).
+pub fn zlib_trailer(adler: u32) -> [u8; 4] {
+    adler.to_be_bytes()
 }
 
 /// One-shot zlib compression.

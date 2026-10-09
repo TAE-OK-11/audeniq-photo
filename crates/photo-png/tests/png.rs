@@ -256,3 +256,64 @@ src.convert("1").save(f"{d}/one.png")
     assert!(one.data.iter().all(|&v| v == 0 || v == 255));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Noisy RGB rows (zlib's own match finder wins) or a smooth gradient
+/// (the image strategy wins), large enough for several parallel pieces.
+fn large(noisy: bool) -> Image {
+    let (w, h) = (1700u32, 1400u32);
+    let mut x32 = 0x9E37_79B9u32;
+    let mut data = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            x32 ^= x32 << 13;
+            x32 ^= x32 >> 17;
+            x32 ^= x32 << 5;
+            let n = if noisy { (x32 & 15) as i32 - 8 } else { 0 };
+            for c in 0..3 {
+                let v = ((x * 255 / w) as i32 + (y * 255 / h) as i32 * c / 2 + n).clamp(0, 255);
+                data.push(v as u8);
+            }
+        }
+    }
+    Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data,
+    }
+}
+
+#[test]
+fn parallel_pieces_roundtrip_and_are_deterministic() {
+    for noisy in [true, false] {
+        let img = large(noisy);
+        let png = encode(&img, Level::DEFAULT).unwrap();
+        let (_, back) = decode(&png, &Limits::default(), &Deadline::NONE).unwrap();
+        assert_eq!(back.data, img.data, "noisy={noisy}");
+        // Pieces depend on the image only, not on scheduling.
+        assert_eq!(encode(&img, Level::DEFAULT).unwrap(), png, "noisy={noisy}");
+        // An independent zlib (Pillow's) reads it too, checksum included.
+        let dir =
+            std::env::temp_dir().join(format!("photo-png-pieces-{}-{noisy}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("p.png"), &png).unwrap();
+        std::fs::write(dir.join("p.raw"), &img.data).unwrap();
+        let out = Command::new("python3")
+            .args([
+                "-c",
+                "import sys\nfrom PIL import Image\nim = Image.open(sys.argv[1] + '/p.png'); im.load()\nprint(im.tobytes() == open(sys.argv[1] + '/p.raw', 'rb').read())",
+            ])
+            .arg(&dir)
+            .output();
+        std::fs::remove_dir_all(&dir).ok();
+        if let Ok(o) = out
+            && o.status.success()
+        {
+            assert_eq!(
+                String::from_utf8_lossy(&o.stdout).trim(),
+                "True",
+                "noisy={noisy}"
+            );
+        }
+    }
+}

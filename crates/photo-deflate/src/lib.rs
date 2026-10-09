@@ -12,11 +12,11 @@ mod checksum;
 mod engine;
 mod stream;
 
-pub use checksum::{adler32, crc32, Adler32, Crc32};
+pub use checksum::{adler32, adler32_combine, crc32, Adler32, Crc32};
 pub use photo_core::{Error, Result};
 pub use stream::{
-    compress_zlib, inflate_raw, inflate_zlib, inflate_zlib_exact, Compressor, Inflated, Level,
-    Tuning,
+    compress_zlib, inflate_raw, inflate_zlib, inflate_zlib_exact, zlib_trailer, Compressor,
+    Inflated, Level, Tuning,
 };
 
 /// Detect CPU features now (call at service start) so that no request
