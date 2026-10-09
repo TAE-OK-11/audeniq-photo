@@ -4,7 +4,8 @@
 //! audeniq-photo probe <file>                 ffprobe-style JSON (format, width, height)
 //! audeniq-photo meta <file> [-TAG ...]       ExifTool-style JSON (-j -n -G1), all or selected tags
 //! audeniq-photo color <file>                 color properties (artwork policy input)
-//! audeniq-photo provenance <file>            provenance fields (AI metadata signals input)
+//! audeniq-photo provenance <file>            provenance fields (AI metadata signals input;
+//!                                            audio sample data is not read)
 //! audeniq-photo qr <file>                    decoded QR count
 //! audeniq-photo ocr <file>                   TSV like `tesseract <file> stdout -l eng+kor --psm 11 tsv`
 //! audeniq-photo cover <file>                 all of the above in one pass
@@ -106,7 +107,10 @@ fn run(args: &[String]) -> Result<(), String> {
             );
         }
         "provenance" => {
-            let m = audeniq_photo::metadata(&read(file()?)?).map_err(|e| e.to_string())?;
+            // Audio masters can be hundreds of megabytes: read only the
+            // metadata chunks, never the sample data.
+            let m = audeniq_photo::metadata_file(std::path::Path::new(file()?))
+                .map_err(|e| e.to_string())?;
             print(&Value::Object(audeniq_photo::provenance_fields(&m)));
         }
         "qr" => {
