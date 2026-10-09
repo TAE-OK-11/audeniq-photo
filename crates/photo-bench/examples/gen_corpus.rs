@@ -115,6 +115,38 @@ fn flat(w: usize, h: usize, seed: u64) -> Image {
     }
 }
 
+/// The synthetic cover of `audeniq-photo-bench` (gradients plus noise
+/// shared by the three channels, rings and blocks).
+fn bench_cover(w: u32, h: u32, seed: u32) -> Image {
+    let mut data = Vec::with_capacity((w * h * 3) as usize);
+    let mut x32 = seed.wrapping_mul(2_654_435_761) | 1;
+    for y in 0..h {
+        for x in 0..w {
+            x32 ^= x32 << 13;
+            x32 ^= x32 >> 17;
+            x32 ^= x32 << 5;
+            let n = (x32 & 15) as i32 - 8;
+            let cx = x as i32 - (w / 2) as i32;
+            let cy = y as i32 - (h / 3) as i32;
+            let ring = if (cx * cx + cy * cy) % 40_000 < 9_000 {
+                40
+            } else {
+                0
+            };
+            let r = ((x * 255 / w) as i32 + n + ring).clamp(0, 255) as u8;
+            let g = ((y * 255 / h) as i32 + n - ring / 2).clamp(0, 255) as u8;
+            let b = ((((x / 37) ^ (y / 53)) & 0x3F) as i32 * 3 + 60 + n).clamp(0, 255) as u8;
+            data.extend_from_slice(&[r, g, b]);
+        }
+    }
+    Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data,
+    }
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).expect("OUT_DIR"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -124,6 +156,7 @@ fn main() {
         ("photo_clean_3000", photo(3000, 3000, 3, 1.0)),
         ("flat_3000", flat(3000, 3000, 4)),
         ("flat_1400", flat(1400, 1400, 5)),
+        ("bench_3000", bench_cover(3000, 3000, 1)),
     ];
     for (name, img) in &set {
         let png = audeniq_photo::sanitize::encode_png(img).unwrap();

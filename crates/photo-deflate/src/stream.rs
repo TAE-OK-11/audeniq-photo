@@ -258,6 +258,18 @@ fn take_deflate(level: Level, zlib: bool, strategy: Strategy) -> DeflateState {
     }
 }
 
+/// Match-finding policy of a [`Compressor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tuning {
+    /// zlib's (zlib-ng's) per-level match finders.
+    #[default]
+    Default,
+    /// Long matches only, accepted by estimated bit cost: for filtered
+    /// photographic pixels (smaller and several times faster there; flat
+    /// graphics still compress well, noise shared across channels less).
+    Image,
+}
+
 /// Streaming compressor producing a raw DEFLATE or a zlib stream.
 pub struct Compressor {
     st: Option<DeflateState>,
@@ -287,8 +299,17 @@ impl Compressor {
     /// matches are coded (see the engine's `Strategy::Image`). `level`
     /// sets the match search effort (hash chain length).
     pub fn zlib_image(level: Level) -> Self {
+        Self::zlib_tuned(level, Tuning::Image)
+    }
+
+    /// zlib-wrapped stream with the given [`Tuning`].
+    pub fn zlib_tuned(level: Level, tuning: Tuning) -> Self {
+        let strategy = match tuning {
+            Tuning::Default => Strategy::Default,
+            Tuning::Image => Strategy::Image,
+        };
         Compressor {
-            st: Some(take_deflate(level, true, Strategy::Image)),
+            st: Some(take_deflate(level, true, strategy)),
             zlib: true,
         }
     }

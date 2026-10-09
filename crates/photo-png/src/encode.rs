@@ -2,7 +2,7 @@
 //! source file (text, EXIF, ICC, appended data) can survive re-encoding.
 
 use photo_core::{Error, Image, PixelFormat, Result};
-use photo_deflate::{Compressor, Crc32, Level};
+use photo_deflate::{Compressor, Crc32, Level, Tuning};
 use std::io::Write;
 
 const IDAT_CHUNK: usize = 64 * 1024;
@@ -33,12 +33,18 @@ pub struct Encoder<W: Write> {
 }
 
 impl<W: Write> Encoder<W> {
-    pub fn new(
+    pub fn new(out: W, width: u32, height: u32, format: PixelFormat, level: Level) -> Result<Self> {
+        Self::with_tuning(out, width, height, format, level, Tuning::Image)
+    }
+
+    /// As [`Encoder::new`], with the zlib match-finding policy given.
+    pub fn with_tuning(
         mut out: W,
         width: u32,
         height: u32,
         format: PixelFormat,
         level: Level,
+        tuning: Tuning,
     ) -> Result<Self> {
         let color_type = match format {
             PixelFormat::Gray8 => 0,
@@ -61,7 +67,7 @@ impl<W: Write> Encoder<W> {
         let stride = width as usize * bpp;
         Ok(Encoder {
             out,
-            z: Some(Compressor::zlib_image(level)),
+            z: Some(Compressor::zlib_tuned(level, tuning)),
             buf: Vec::with_capacity(IDAT_CHUNK * 2),
             bpp,
             stride,
@@ -111,17 +117,76 @@ impl<W: Write> Encoder<W> {
 
 /// Encode a whole image into a PNG byte vector.
 pub fn encode(img: &Image, level: Level) -> Result<Vec<u8>> {
-    let mut e = Encoder::new(
+    let tuning = choose_tuning(img, level);
+    let mut e = Encoder::with_tuning(
         Vec::with_capacity(img.data.len() / 2),
         img.width,
         img.height,
         img.format,
         level,
+        tuning,
     )?;
     for row in img.data.chunks_exact(img.stride()) {
         e.write_row(row)?;
     }
     e.finish()
+}
+
+/// Raw bytes per sample band, and the number of bands.
+const SAMPLE_BAND: usize = 128 * 1024;
+const SAMPLE_BANDS: usize = 4;
+
+/// Pick the zlib tuning for `img`: the image strategy (long matches only)
+/// unless zlib's own match finder makes clearly smaller output on a sample
+/// of filtered rows. Photographs favour the image strategy (smaller and
+/// several times faster); content whose filter residuals repeat in short
+/// strings (noise shared by the three channels, dithering) favours zlib's.
+/// Images up to four bands are sampled whole.
+fn choose_tuning(img: &Image, level: Level) -> Tuning {
+    let stride = img.stride();
+    let h = img.height as usize;
+    if stride == 0 || h == 0 || level.get() == 0 {
+        return Tuning::Image;
+    }
+    let bpp = img.format.channels();
+    let band_rows = (SAMPLE_BAND / stride).clamp(1, h);
+    let starts: Vec<usize> = if band_rows * SAMPLE_BANDS >= h {
+        vec![0]
+    } else {
+        (0..SAMPLE_BANDS)
+            .map(|i| h * (2 * i + 1) / (2 * SAMPLE_BANDS) - band_rows / 2)
+            .collect()
+    };
+    let rows = if starts.len() == 1 { h } else { band_rows };
+    let mut sample = Vec::with_capacity(starts.len() * rows * (stride + 1));
+    let zero = vec![0u8; stride];
+    let mut line = vec![0u8; stride];
+    for &y0 in &starts {
+        for y in y0..y0 + rows {
+            let row = &img.data[y * stride..(y + 1) * stride];
+            let prev = if y == 0 {
+                &zero[..]
+            } else {
+                &img.data[(y - 1) * stride..y * stride]
+            };
+            sample.push(filter_row(row, prev, bpp, &mut line));
+            sample.extend_from_slice(&line);
+        }
+    }
+    let size = |tuning| {
+        let mut c = Compressor::zlib_tuned(level, tuning);
+        let mut out = Vec::with_capacity(sample.len() / 2);
+        c.write(&sample, &mut out);
+        c.finish(&mut out);
+        out.len()
+    };
+    let (image, default) = (size(Tuning::Image), size(Tuning::Default));
+    // Prefer the (faster) image strategy unless zlib's saves over 3%.
+    if default * 100 < image * 97 {
+        Tuning::Default
+    } else {
+        Tuning::Image
+    }
 }
 
 /// Paeth predictor (branch-free so the filter loops vectorize).
