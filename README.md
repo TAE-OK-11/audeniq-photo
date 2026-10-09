@@ -3,8 +3,9 @@
 Audeniq 백엔드가 외부 프로세스로 실행하던 이미지 도구(ffprobe, ExifTool, ZBar,
 Python/Pillow/LittleCMS 업로드 정화기, Poppler `pdfinfo`/`pdftoppm`)를 **Rust로 포팅해 하나의 라이브러리**로 합친 저장소입니다.
 원칙: **이미 Rust로 된 우수한 구현은 가져와 Audeniq에 맞게 개선**하고(zlib-rs, hayro), **Rust가 아닌 도구는 포팅**합니다.
-`unsafe`는 `photo-deflate`의 엔진 모듈(zlib-rs에서 합친 SIMD 커널·스트림 버퍼)과 `photo-pdf-syntax`의 페이지 캐시 한 곳에만 있고,
-나머지 크레이트는 `unsafe`를 금지합니다. 외부 C 라이브러리나 실행 파일에는 의존하지 않습니다(Tesseract는 포팅 중: 한 줄 인식 완료, 페이지 배치 분석 진행 — [docs/PORTING.md](docs/PORTING.md)).
+`unsafe`는 `photo-deflate`의 엔진 모듈(zlib-rs에서 합친 SIMD 커널·스트림 버퍼), `photo-pdf-syntax`의 페이지 캐시 한 곳,
+`photo-ocr`의 AVX2 커널 호출 한 곳(CPU 감지 뒤 같은 안전 코드를 AVX2로 컴파일한 함수를 부름)에만 있고 나머지 크레이트는 `unsafe`를 금지합니다.
+외부 C 라이브러리나 실행 파일에는 의존하지 않습니다(포팅 현황 — [docs/PORTING.md](docs/PORTING.md)).
 
 ## 구성
 
@@ -18,8 +19,8 @@ Python/Pillow/LittleCMS 업로드 정화기, Poppler `pdfinfo`/`pdftoppm`)를 **
 | `photo-meta` | EXIF/XMP/ICC/PNG 텍스트, RIFF·AIFF·FLAC·MP4·WavPack·TTA 오디오 태그 | ExifTool 리더 |
 | `photo-qr` | QR 검출·디코딩(디코딩 성공 개수) | quirc + 표준 Reed–Solomon |
 | `photo-pdf` 외 7개 (`-syntax`, `-interpret`, `-ccitt`, `-jbig2`, `-jpeg2000`, `-cmap`, `-postscript`) | PDF 파서·인터프리터·래스터라이저. Flate는 `photo-deflate`, JPEG는 `photo-jpeg`로 연결 | [hayro](https://github.com/LaurenzV/hayro) 0.8.0 (`crates/photo-pdf/UPSTREAM.md`) |
-| `photo-ocr` | OCR: Tesseract LSTM 인식기 포팅(int8 망, CTC 빔 탐색+사전, Leptonica 전처리), `tessdata_fast` eng/kor 모델 내장 | Tesseract 5.3.4, Leptonica 1.82 |
-| `audeniq-photo` | 백엔드용 통합 API: `probe`, `color_report`, `provenance_fields`, `qr_count`, `sanitize`, `pdf`, `inspect_cover` | — |
+| `photo-ocr` | OCR: Tesseract 포팅 — 이진화·선 제거·희소 텍스트 배치 분석(`--psm 11`), 기준선·행·단어 분할, LSTM 인식(int8 망, CTC 빔 탐색+사전), 언어 재시도, TSV 출력. `tessdata_fast` eng/kor 모델 내장 | Tesseract 5.3.4, Leptonica 1.82 |
+| `audeniq-photo` | 백엔드용 통합 API: `probe`, `color_report`, `provenance_fields`, `qr_count`, `ocr_tsv`, `sanitize`, `pdf`, `inspect_cover` | — |
 | `photo-cli` | `audeniq-photo` 명령행 도구 | — |
 | `photo-bench` | `audeniq-photo-bench` 외부 도구 대비 벤치마크 | — |
 
@@ -34,6 +35,8 @@ Python/Pillow/LittleCMS 업로드 정화기, Poppler `pdfinfo`/`pdftoppm`)를 **
 - PDF: hayro·pdf.js·PDFBox 시험 문서 395개에서 패닉·시간 초과 없음, 첫 페이지 271개 중 196개가 pdftoppm과 평균 차 2 미만
   (나머지 대부분은 Poppler가 그리지 못하는 Type3 글꼴·셰이딩 배경·이름 있는 색공간, 또는 MediaBox 대신 CropBox를 그리는 차이)
 - OCR 한 줄 인식(`tesseract --psm 13`): 영어·한국어, 흑백·컬러·반전·잡음·흐림·9~90pt 151개 줄 이미지에서 단어와 신뢰도(소수 6자리)까지 **동일**
+- OCR 페이지(`tesseract -l eng+kor --psm 11 tsv`): 생성 커버 172개(PNG 132, JPEG 40; 회전 글자·그라데이션·잡음·흐림·흑백 포함)에서 TSV **바이트 단위 동일**
+  (블록·문단·줄·단어 상자, 신뢰도, 글자). 단일 스레드 기준 Tesseract보다 1.5배 빠르고 최대 메모리 48 MB(Tesseract 58 MB)
 - 퍼징: 손상·절단 입력 수천 건에서 패닉 없음(패닉은 `Error::Internal`로 격리)
 
 비교 테스트는 python3/Pillow, exiftool, zbarimg, qrencode, ffmpeg, poppler가 있을 때만 실행되고 없으면 건너뜁니다.

@@ -26,7 +26,7 @@
 | 4 | ffprobe(이미지) | 헤더만 읽는데 프로세스 40–215 ms, 50–94 MB | **완료** |
 | 5 | ffprobe(오디오 태그 대체 경로) | 네이티브 리더가 TTA를 직접 읽으면 불필요 | **완료** |
 | 6 | Poppler | 문서 업로드만(드묾), PDF 파서+래스터라이저는 대규모 | **2차 완료** (hayro를 가져와 합침) |
-| 7 | Tesseract | 커버마다 실행되지만 LSTM 엔진·eng/kor 모델 포팅은 별도 대형 과제 | 3차 진행 중 (한 줄 인식 완료) |
+| 7 | Tesseract | 커버마다 실행되지만 LSTM 엔진·eng/kor 모델 포팅은 별도 대형 과제 | **완료** (3차) |
 
 ## 3. 백엔드 전환 내용 (1차)
 
@@ -42,7 +42,7 @@
 데드라인, 패닉 격리(`catch_unwind`)를 갖습니다. PDF는 렌더링 중 중단이 불가능하므로 둘로 나눕니다:
 파싱·렌더링(`pdf::rasterize_frames`)은 기존 Landlock/seccomp 샌드박스(시간·메모리 한도) 자식 프로세스에서(Poppler 자리)
 원시 RGB 프레임만 내보내고, 부모가 프레임을 검증(쪽수·크기·픽셀 예산·정확한 길이)해 이미지 전용 PDF를 직접 씁니다
-(`pdf::image_only_pdf_from_frames`). 자식이 오염돼도 결과물에는 픽셀만 들어갑니다. Tesseract는 기존대로 샌드박스에서 실행됩니다.
+(`pdf::image_only_pdf_from_frames`). 자식이 오염돼도 결과물에는 픽셀만 들어갑니다. OCR은 Tesseract 대신 `audeniq_photo::ocr_tsv`가 프로세스 안에서 수행합니다.
 
 ## 4. 원칙: Rust 구현은 가져와 개선, 나머지는 포팅
 
@@ -63,13 +63,18 @@
 
 1. **2차 (완료)**: PDF — hayro를 가져와 합치고 Poppler 제거. 남은 합칠 대상: `moxcms` → `photo-icc`, `pic-scale` → 자체 리샘플러,
    이후 `vello_cpu`·`skrifa`·`kurbo`
-2. **3차 (진행 중)**: OCR — `photo-ocr`.
+2. **3차 (완료)**: OCR — `photo-ocr`.
    - 1단계 완료: traineddata 로더, int8 LSTM 망(Convolve·Maxpool·LSTM·요약 LSTM·역방향·전치·Softmax), `TRand`(minstd)까지
      같은 난수, Leptonica 전처리(`pixScale`의 LI·면적 평균·2x/4x·unsharp mask, 컬러는 채널별 축소 후 휘도, 반전 재시도),
      unicharset·재부호기(한글 자모 코드), DAWG 사전, Tesseract 힙을 그대로 옮긴 CTC 빔 탐색, 단어 분리·신뢰도.
      `tesseract --psm 13`과 단어·신뢰도가 소수 6자리까지 같음(빈 줄의 환각 출력까지 동일). 한 줄 약 22 ms(SIMD 전).
-   - 2단계: `--psm 11`(희소 텍스트) 페이지 배치 분석(textord: 이진화·연결 성분·줄 찾기) 포팅, `eng+kor` 다국어 선택
-   - 3단계: 백엔드 `artwork_policy::text` 전환, `tesseract-ocr` 패키지 제거
+   - 2단계 완료: `--psm 11`(희소 텍스트) 페이지 배치 분석 — Otsu 이진화, 선 제거, 사진 영역, 연결 성분·윤곽선,
+     획 폭·탭 찾기·열 분할(ColumnFinder 희소 경로), 기준선(x87 80비트 확장 정밀도까지 재현한 QLSQ), 행·x높이,
+     밑줄 분리, 고정 피치·간격 통계·단어 분할, 잡음 정리, 발음 구별 부호 전달. 단계마다 Tesseract 계측 덤프와 52개 표지 일치.
+   - 3단계 완료: 단어 단위 LSTM 인식(행 기준선으로 자른 원본 이미지), `eng+kor` 언어 재시도(`SelectBestWords`),
+     원래 블롭 재분배로 단어 상자, TSV. 생성 커버 172개(PNG·JPEG)에서 `tesseract -l eng+kor --psm 11 tsv`와 바이트 단위 동일.
+     워드 단위 rasterop과 런타임 AVX2 int8 커널로 단일 스레드 Tesseract보다 1.5배 빠름(52개 표지 15.7초 대 23.9초).
+     백엔드 `artwork_policy::text`가 `audeniq_photo::ocr_tsv`를 쓰고 `tesseract-ocr` 패키지를 제거.
 3. 자체 개발 단계: 포팅 코드를 기준선으로 고정(현재의 비트 동일 테스트)한 뒤 SIMD 경로(target_feature)와 자체 매치파인더·허프만 최적화, 메타데이터 C2PA(JUMBF) 판독 추가
 4. 오디오 도구(ffmpeg/ffprobe) 포팅은 별도 저장소에서 같은 원칙으로 진행하고, 공통 크레이트(`photo-core`, `photo-deflate`)를 공유
 
