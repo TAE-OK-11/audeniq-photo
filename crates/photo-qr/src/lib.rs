@@ -25,7 +25,18 @@ pub struct Scan {
 
 /// Scan an 8-bit grayscale image (row-major, `width * height` bytes).
 pub fn scan(gray: &[u8], width: usize, height: usize, deadline: &Deadline) -> Result<Scan> {
-    let mut q = identify::Quirc::new(gray, width, height);
+    finish(identify::Quirc::new(gray, width, height), deadline)
+}
+
+/// [`scan`] that frees the grayscale buffer once it is thresholded, so the
+/// image and the label plane are never held together.
+pub fn scan_owned(gray: Vec<u8>, width: usize, height: usize, deadline: &Deadline) -> Result<Scan> {
+    let q = identify::Quirc::new(&gray, width, height);
+    drop(gray);
+    finish(q, deadline)
+}
+
+fn finish(mut q: identify::Quirc, deadline: &Deadline) -> Result<Scan> {
     q.identify(deadline)?;
     let mut out = Scan {
         candidates: q.grids.len(),
@@ -41,6 +52,12 @@ pub fn scan(gray: &[u8], width: usize, height: usize, deadline: &Deadline) -> Re
     Ok(out)
 }
 
+/// Rec.601 luma of one RGB pixel (the rounding [`to_gray`] uses).
+#[inline]
+pub fn luma(r: u8, g: u8, b: u8) -> u8 {
+    ((u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 + 500) / 1000) as u8
+}
+
 /// Rec.601 luma of interleaved 8-bit pixels with `channels` samples; the
 /// first three are RGB, a fourth (alpha) is ignored.
 pub fn to_gray(pixels: &[u8], channels: usize) -> Vec<u8> {
@@ -49,10 +66,7 @@ pub fn to_gray(pixels: &[u8], channels: usize) -> Vec<u8> {
         2 => pixels.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
         _ => pixels
             .chunks_exact(channels)
-            .map(|p| {
-                ((u32::from(p[0]) * 299 + u32::from(p[1]) * 587 + u32::from(p[2]) * 114 + 500)
-                    / 1000) as u8
-            })
+            .map(|p| luma(p[0], p[1], p[2]))
             .collect(),
     }
 }

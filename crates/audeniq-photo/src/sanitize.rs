@@ -228,25 +228,21 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
         let profile =
             photo_icc::Profile::parse(icc).map_err(|_| Error::Invalid("invalid ICC profile"))?;
         // Pillow modes: L/LA → gray, RGB/RGBA/P → RGB, CMYK.
-        let (src, channels) = match image.format {
-            PixelFormat::Gray8 => (std::mem::take(&mut image.data), 1),
-            PixelFormat::GrayAlpha8 => (
-                image.data.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
-                1,
-            ),
-            PixelFormat::Rgb8 => (std::mem::take(&mut image.data), 3),
-            PixelFormat::Rgba8 => (
-                image
-                    .data
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .flat_map(|p| [p[0], p[1], p[2]])
-                    .collect(),
-                3,
-            ),
-            PixelFormat::Cmyk8 => (std::mem::take(&mut image.data), 4),
+        // Alpha is dropped in place (the profile converts color only).
+        let channels = match image.format {
+            PixelFormat::Gray8 => 1,
+            PixelFormat::GrayAlpha8 => {
+                drop_alpha::<2, 1>(&mut image.data);
+                1
+            }
+            PixelFormat::Rgb8 => 3,
+            PixelFormat::Rgba8 => {
+                drop_alpha::<4, 3>(&mut image.data);
+                3
+            }
+            PixelFormat::Cmyk8 => 4,
         };
+        let src = std::mem::take(&mut image.data);
         let t = photo_icc::Transform::to_srgb(&profile, channels)
             .map_err(|_| Error::Invalid("ICC profile does not apply to this image"))?;
         let pixels = image.width as usize * image.height as usize;
@@ -259,6 +255,7 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
             for (s, d) in src.chunks(channels * 4096).zip(v.chunks_mut(3 * 4096)) {
                 t.convert(s, d);
             }
+            drop(src);
             v
         };
         image = Image {
@@ -271,6 +268,17 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
         image = image.into_rgb8();
     }
     Ok(image)
+}
+
+/// Keep the first `M` of every `N` bytes, compacting front to back, and
+/// release the tail.
+fn drop_alpha<const N: usize, const M: usize>(buf: &mut Vec<u8>) {
+    let n = buf.len() / N;
+    for i in 0..n {
+        buf.copy_within(i * N..i * N + M, i * M);
+    }
+    buf.truncate(n * M);
+    buf.shrink_to_fit();
 }
 
 /// Sanitize one image upload. Returns the new file's bytes.

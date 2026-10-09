@@ -231,19 +231,28 @@ fn encode_pieces(
     } else {
         let next = std::sync::atomic::AtomicUsize::new(0);
         let results = std::sync::Mutex::new(&mut done);
-        std::thread::scope(|scope| {
-            for _ in 0..threads {
-                scope.spawn(|| {
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if i >= pieces.len() {
-                            break;
-                        }
-                        let r = compress(i);
-                        results.lock().expect("no worker panicked")[i] = Some(r);
-                    }
-                });
+        let work = || {
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= pieces.len() {
+                    break;
+                }
+                let r = compress(i);
+                results.lock().expect("no worker panicked")[i] = Some(r);
             }
+        };
+        std::thread::scope(|scope| {
+            // The calling thread works too; a helper the OS refuses (thread
+            // or memory limits) only means fewer helpers, never an error.
+            for _ in 1..threads {
+                if std::thread::Builder::new()
+                    .spawn_scoped(scope, work)
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            work();
         });
     }
     let done: Vec<_> = done
@@ -258,9 +267,10 @@ fn encode_pieces(
     let mut out = Vec::with_capacity(total + total.div_ceil(IDAT_CHUNK) * 12 + 64);
     write_header(&mut out, img.width, img.height, img.format)?;
     // IDAT chunks of IDAT_CHUNK bytes across the piece boundaries, as the
-    // streaming encoder cuts them.
+    // streaming encoder cuts them. Each piece is freed once copied.
     let mut chunk = Vec::with_capacity(IDAT_CHUNK);
-    for mut part in done.iter().map(|d| &d.0[..]).chain([&trailer[..]]) {
+    for piece in done.into_iter().map(|d| d.0).chain([trailer.to_vec()]) {
+        let mut part = &piece[..];
         while !part.is_empty() {
             let n = (IDAT_CHUNK - chunk.len()).min(part.len());
             chunk.extend_from_slice(&part[..n]);
