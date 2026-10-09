@@ -237,3 +237,140 @@ pub(crate) fn dot_int_rows_vnni(
     #[cfg(not(target_arch = "x86_64"))]
     unreachable!("VNNI layout is only chosen on x86-64");
 }
+
+/// Tesseract's table-interpolated `Tanh` (or `Logistic`) over a slice,
+/// eight lanes at a time with AVX2 gathers; every result is bit-identical
+/// to [`super::tanh`] / [`super::logistic`] (same operations, no fused
+/// multiply-add; NaN, -0.0 and saturation behave the same).
+pub(crate) fn table_act(v: &mut [f32], logistic: bool) {
+    #[cfg(target_arch = "x86_64")]
+    if photo_core::cpu::x86_v3() {
+        // SAFETY: AVX2 is present (checked just above), the only
+        // requirement of calling a function compiled for it.
+        #[allow(unsafe_code)]
+        return unsafe { table_act_avx2(v, logistic) };
+    }
+    let f = if logistic {
+        super::logistic
+    } else {
+        super::tanh
+    };
+    v.iter_mut().for_each(|x| *x = f(*x));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn table_act_avx2(v: &mut [f32], logistic: bool) {
+    use std::arch::x86_64::*;
+    let table: &[f32; 4096] = if logistic {
+        &super::LOGISTIC_TABLE
+    } else {
+        &super::TANH_TABLE
+    };
+    let sign = _mm256_set1_ps(-0.0);
+    let one = _mm256_set1_ps(1.0);
+    let k256 = _mm256_set1_ps(256.0);
+    let top = _mm256_set1_ps(4095.0);
+    let (zero_i, max_i) = (_mm256_setzero_si256(), _mm256_set1_epi32(4094));
+    let mut chunks = v.chunks_exact_mut(8);
+    for c in &mut chunks {
+        let arr: [f32; 8] = c.try_into().expect("8");
+        let x = _mm256_set_ps(
+            arr[7], arr[6], arr[5], arr[4], arr[3], arr[2], arr[1], arr[0],
+        );
+        // y = |x| * 256; index = y as u32, i.e. truncation (NaN -> 0).
+        let y = _mm256_mul_ps(_mm256_andnot_ps(sign, x), k256);
+        let raw = _mm256_cvttps_epi32(y); // NaN / >= 2^31 -> i32::MIN
+        let idx = _mm256_min_epi32(_mm256_max_epi32(raw, zero_i), max_i);
+        // SAFETY: every index is clamped to 0..=4094 just above, so idx and
+        // idx + 1 stay inside the 4096-entry table.
+        #[allow(unsafe_code)]
+        let (t0, t1) = unsafe {
+            (
+                _mm256_i32gather_ps::<4>(table.as_ptr(), idx),
+                _mm256_i32gather_ps::<4>(
+                    table.as_ptr(),
+                    _mm256_add_epi32(idx, _mm256_set1_epi32(1)),
+                ),
+            )
+        };
+        // t0 + (t1 - t0) * (y - index): for unsaturated lanes `idx` is the
+        // index; NaN lanes get idx 0 and stay NaN, as in the scalar code.
+        let frac = _mm256_sub_ps(y, _mm256_cvtepi32_ps(idx));
+        let interp = _mm256_add_ps(t0, _mm256_mul_ps(_mm256_sub_ps(t1, t0), frac));
+        // index >= 4095  <=>  y >= 4095 (ordered: false for NaN).
+        let sat = _mm256_cmp_ps::<_CMP_GE_OQ>(y, top);
+        let r = _mm256_blendv_ps(interp, one, sat);
+        let neg = _mm256_cmp_ps::<_CMP_LT_OQ>(x, _mm256_setzero_ps());
+        let out = if logistic {
+            _mm256_blendv_ps(r, _mm256_sub_ps(one, r), neg)
+        } else {
+            _mm256_blendv_ps(r, _mm256_xor_ps(r, sign), neg)
+        };
+        let mut res = [0f32; 8];
+        res[0] = _mm256_cvtss_f32(out);
+        let hi = _mm256_extractf128_ps::<1>(out);
+        let lo = _mm256_castps256_ps128(out);
+        res[1] = f32::from_bits(_mm_extract_ps::<1>(lo) as u32);
+        res[2] = f32::from_bits(_mm_extract_ps::<2>(lo) as u32);
+        res[3] = f32::from_bits(_mm_extract_ps::<3>(lo) as u32);
+        res[4] = _mm_cvtss_f32(hi);
+        res[5] = f32::from_bits(_mm_extract_ps::<1>(hi) as u32);
+        res[6] = f32::from_bits(_mm_extract_ps::<2>(hi) as u32);
+        res[7] = f32::from_bits(_mm_extract_ps::<3>(hi) as u32);
+        c.copy_from_slice(&res);
+    }
+    let f = if logistic {
+        super::logistic
+    } else {
+        super::tanh
+    };
+    for x in chunks.into_remainder() {
+        *x = f(*x);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn table_act_matches_scalar_bit_for_bit() {
+        let mut xs = vec![
+            0.0,
+            -0.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1e30,
+            -1e30,
+            15.99,
+            15.996,
+            -15.996,
+            4095.0 / 256.0,
+            -4095.0 / 256.0,
+            4094.999 / 256.0,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+        ];
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..20_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            xs.push((seed as i32) as f32 / (1u32 << 26) as f32);
+        }
+        for logistic in [false, true] {
+            let mut v = xs.clone();
+            super::table_act(&mut v, logistic);
+            let f = if logistic {
+                super::super::logistic
+            } else {
+                super::super::tanh
+            };
+            for (&x, &got) in xs.iter().zip(&v) {
+                let want = f(x);
+                assert!(
+                    got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()),
+                    "logistic={logistic} x={x}: {got} vs {want}"
+                );
+            }
+        }
+    }
+}

@@ -11,7 +11,7 @@ use crate::reader::Reader;
 use crate::{Error, Result};
 use io::{HEIGHT, NetIo, WIDTH};
 use rand::TRand;
-use tables::{LOGISTIC_TABLE, TANH_TABLE};
+pub(crate) use tables::{LOGISTIC_TABLE, TANH_TABLE};
 
 const NF_LAYER_SPECIFIC_LR: i32 = 64;
 const STATE_CLIP: f32 = 100.0;
@@ -100,43 +100,40 @@ pub(crate) fn logistic(x: f32) -> f32 {
     if x < 0.0 { 1.0 - r } else { r }
 }
 
-photo_core::multiversion! {
-    fn tanh_slice(v: &mut [f32]) -> () = tanh_slice_body;
+/// [`tanh`] over a slice (AVX2 gathers when available).
+fn tanh_slice(v: &mut [f32]) {
+    simd::table_act(v, false);
 }
 
-#[inline(always)]
-fn tanh_slice_body(v: &mut [f32]) {
-    v.iter_mut().for_each(|x| *x = tanh(*x));
+/// [`logistic`] over a slice (AVX2 gathers when available).
+fn logistic_slice(v: &mut [f32]) {
+    simd::table_act(v, true);
 }
 
-photo_core::multiversion! {
-    fn logistic_slice(v: &mut [f32]) -> () = logistic_slice_body;
-}
-
-#[inline(always)]
-fn logistic_slice_body(v: &mut [f32]) {
-    v.iter_mut().for_each(|x| *x = logistic(*x));
-}
-
-photo_core::multiversion! {
-    /// One LSTM cell update from the four gate pre-activations
-    /// (CI=0, GI=1, GF1=2, GO=3), in Tesseract's operation order.
-    fn lstm_cell(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f32]) -> () = lstm_cell_body;
-}
-
-#[inline(always)]
-fn lstm_cell_body(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f32]) {
-    tanh_slice_body(&mut lines[0]);
+/// One LSTM cell update from the four gate pre-activations
+/// (CI=0, GI=1, GF1=2, GO=3), in Tesseract's operation order.
+fn lstm_cell(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f32]) {
+    tanh_slice(&mut lines[0]);
     for line in &mut lines[1..] {
-        logistic_slice_body(line);
+        logistic_slice(line);
     }
+    lstm_state(lines, state);
     let ns = state.len();
-    let (ci, gi, gf, go) = (
-        &lines[0][..ns],
-        &lines[1][..ns],
-        &lines[2][..ns],
-        &lines[3][..ns],
-    );
+    output[..ns].copy_from_slice(state);
+    tanh_slice(&mut output[..ns]);
+    for (o, &g) in output[..ns].iter_mut().zip(&lines[3][..ns]) {
+        *o *= g;
+    }
+}
+
+photo_core::multiversion! {
+    fn lstm_state(lines: &[Vec<f32>; 4], state: &mut [f32]) -> () = lstm_state_body;
+}
+
+#[inline(always)]
+fn lstm_state_body(lines: &[Vec<f32>; 4], state: &mut [f32]) {
+    let ns = state.len();
+    let (ci, gi, gf) = (&lines[0][..ns], &lines[1][..ns], &lines[2][..ns]);
     for i in 0..ns {
         state[i] *= gf[i];
     }
@@ -145,9 +142,6 @@ fn lstm_cell_body(lines: &mut [Vec<f32>; 4], state: &mut [f32], output: &mut [f3
     }
     for s in state.iter_mut() {
         *s = s.clamp(-STATE_CLIP, STATE_CLIP);
-    }
-    for i in 0..ns {
-        output[i] = tanh(state[i]) * go[i];
     }
 }
 
