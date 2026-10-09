@@ -99,5 +99,6 @@ let meta = audeniq_photo::metadata_file(Path::new("master.wav"))?; // 오디오 
 | 프로그레시브 JPEG 디코딩 3000px | 195 ms | 168 ms | 지그재그 계수·비트마스크 정밀화, 비트 동일 (libjpeg-turbo 152 ms) |
 | EXIF 회전(6) 3000px JPEG 정화 | 194 ms | 169 ms | 타일 단위 한 번 복사, 뒤집기는 제자리 |
 | CMYK JPEG 3000px 커버 검사 최대 힙 | 72 MB | 45 MB | 휘도를 디코딩 버퍼 안에서 계산 |
+| PDF 정화 3쪽 스캔 / 2쪽 텍스트 | 212 / 79 ms | 166 / 57 ms | 다음 쪽 렌더링과 이전 쪽 JPEG 인코딩을 겹침, 출력 바이트 동일, 최대 힙 +11~13 MB(래스터 한 장) |
 
 런타임 SIMD는 `AUDENIQ_PHOTO_NO_SIMD=1`(전부)과 `AUDENIQ_PHOTO_NO_VNNI=1`(AVX-VNNI만)로 끌 수 있고, 어느 경로든 결과는 같습니다.

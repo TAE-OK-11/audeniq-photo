@@ -73,6 +73,12 @@ fn main() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
+        if data.starts_with(b"%PDF") {
+            measure("pdf", &name, || {
+                audeniq_photo::pdf::sanitize_pdf(&data, &deadline())
+            });
+            continue;
+        }
         let kind = if data.starts_with(b"\x89PNG") {
             Kind::Png
         } else {

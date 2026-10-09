@@ -133,7 +133,7 @@ fn with_pages<R>(
 pub fn sanitize_pdf(data: &[u8], deadline: &Deadline) -> Result<Vec<u8>> {
     guard(|| {
         with_pages(data, |sizes, render| {
-            write_image_pdf(sizes.len(), deadline, render)
+            write_image_pdf(sizes.len(), true, deadline, render)
         })
     })
 }
@@ -190,7 +190,8 @@ pub fn image_only_pdf_from_frames(
             return Err(Error::Invalid("encrypted or oversized document"));
         }
         let side = u32::from(RENDER_SIDE);
-        let pdf = write_image_pdf(count as usize, deadline, |_| {
+        // Reading a page is cheap: no helper thread, one raster at a time.
+        let pdf = write_image_pdf(count as usize, false, deadline, |_| {
             let mut dims = [0u8; 8];
             input.read_exact(&mut dims).map_err(bad)?;
             let w = u32::from_le_bytes(dims[..4].try_into().expect("4 bytes"));
@@ -262,16 +263,75 @@ pub fn pdftoppm_args(pages: u32) -> Vec<String> {
 /// Write a PDF that contains only pages, JPEG image XObjects and the
 /// drawing streams placing them. Each raster goes through [`pixels`].
 pub fn image_only_pdf(rasters: &[Vec<u8>], deadline: &Deadline) -> Result<Vec<u8>> {
-    guard(|| write_image_pdf(rasters.len(), deadline, |i| pixels(&rasters[i], deadline)))
+    guard(|| {
+        write_image_pdf(rasters.len(), true, deadline, |i| {
+            pixels(&rasters[i], deadline)
+        })
+    })
 }
 
-/// Write `count` pages, each one JPEG image XObject filling the page. Pages
-/// are produced one at a time so only one raster is alive.
+/// Write `count` pages, each one JPEG image XObject filling the page.
+///
+/// With `overlap`, pages are produced on the calling thread (the renderer's
+/// caches are not thread-safe) while a helper thread JPEG-encodes and writes
+/// the previous page, so at most two rasters are alive. Without it, or
+/// without a helper thread (the OS refused one), the same work runs in turn
+/// with one raster alive; the output is identical either way.
 fn write_image_pdf(
     count: usize,
+    overlap: bool,
     deadline: &Deadline,
     mut page_image: impl FnMut(usize) -> Result<Image>,
 ) -> Result<Vec<u8>> {
+    // Rendered pages pass the pixel budget here, before any encoding.
+    let mut total: u64 = 0;
+    let mut next = |i: usize| -> Result<Image> {
+        deadline.check()?;
+        let image = page_image(i)?;
+        total += u64::from(image.width) * u64::from(image.height);
+        if total > MAX_TOTAL_PIXELS {
+            return Err(Error::Limit("document pixel budget exceeded"));
+        }
+        Ok(image)
+    };
+    if !overlap || count < 2 {
+        return write_pages(count, (0..count).map(next));
+    }
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Image>(0);
+        let writer = std::thread::Builder::new()
+            .spawn_scoped(scope, move || write_pages(count, rx.into_iter().map(Ok)));
+        let writer = match writer {
+            Ok(w) => w,
+            Err(_) => return write_pages(count, (0..count).map(&mut next)),
+        };
+        let mut failed = None;
+        for i in 0..count {
+            match next(i) {
+                // A closed channel means the writer stopped on an error,
+                // which joining it returns.
+                Ok(image) => {
+                    if tx.send(image).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
+        drop(tx);
+        let written = writer.join().map_err(|_| Error::Internal)?;
+        match failed {
+            Some(e) => Err(e),
+            None => written,
+        }
+    })
+}
+
+/// Encode and write `count` pages taken from `pages`, in order.
+fn write_pages(count: usize, pages: impl Iterator<Item = Result<Image>>) -> Result<Vec<u8>> {
     let mut out: Vec<u8> = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".to_vec();
     let mut offsets = vec![0usize];
     let mut obj = |out: &mut Vec<u8>, n: usize, data: &[u8]| -> Result<()> {
@@ -296,15 +356,10 @@ fn write_image_pdf(
         )
         .as_bytes(),
     )?;
-    let mut total: u64 = 0;
-    for i in 0..count {
-        deadline.check()?;
-        let image = page_image(i)?;
+    let mut written = 0;
+    for (i, image) in pages.enumerate().take(count) {
+        let image = image?;
         let (w, h) = (image.width, image.height);
-        total += u64::from(w) * u64::from(h);
-        if total > MAX_TOTAL_PIXELS {
-            return Err(Error::Limit("document pixel budget exceeded"));
-        }
         let jpeg = photo_jpeg::encode(&image, 85, photo_jpeg::Subsampling::S420)?;
         drop(image);
         let n = 3 + i * 3;
@@ -322,6 +377,10 @@ fn write_image_pdf(
         content.extend_from_slice(drawing.as_bytes());
         content.extend_from_slice(b"\nendstream");
         obj(&mut out, n + 2, &content)?;
+        written += 1;
+    }
+    if written != count {
+        return Err(Error::Invalid("page could not be rendered"));
     }
     let start = out.len();
     out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len()).as_bytes());
