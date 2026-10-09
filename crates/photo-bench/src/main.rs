@@ -37,25 +37,26 @@ fn read_proc(path: &str, key: &str) -> Option<u64> {
         .ok()
 }
 
-fn thread_cpu() -> Duration {
-    let s = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
-    Duration::from_nanos(
-        s.split_whitespace()
-            .next()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0),
-    )
+/// User + system CPU of the whole process, worker threads included (some
+/// operations compress in parallel).
+#[allow(unsafe_code)]
+fn process_cpu() -> Duration {
+    // SAFETY: `rusage` is plain data that getrusage fills.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: valid pointer to a local.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
+    tv(ru.ru_utime) + tv(ru.ru_stime)
 }
 
-/// Measure an in-process operation: wall, thread CPU, peak RSS (VmHWM after
+/// Measure an in-process operation: wall, process CPU, peak RSS (VmHWM after
 /// resetting it through /proc/self/clear_refs).
 fn measure_inproc(mut f: impl FnMut() -> bool) -> Option<Sample> {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
-    let cpu0 = thread_cpu();
+    let cpu0 = process_cpu();
     let t0 = Instant::now();
     let ok = f();
     let wall = t0.elapsed();
-    let cpu = thread_cpu().saturating_sub(cpu0);
+    let cpu = process_cpu().saturating_sub(cpu0);
     let rss_kb = read_proc("/proc/self/status", "VmHWM:").unwrap_or(0);
     ok.then_some(Sample { wall, cpu, rss_kb })
 }

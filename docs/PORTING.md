@@ -84,7 +84,19 @@
    - 완료: QR — 임계값 이동 평균을 4단계 선형 점화식(f64)으로, 64픽셀 비트마스크 런 추출.
    - 완료: OCR — int8 가중치 8행 블록 재배치 + `vpmaddwd`/AVX-VNNI `vpdpbusd`(입력 +128 오프셋을 행 상수로 보정),
      tanh/logistic 표 보간 AVX2 gather, 상자 화소 수 popcount. 52개 표지 14.0→7.4 s.
-   - 남음: 메타데이터 C2PA(JUMBF) 판독, JPEG 디코더 MCU 행 단위 스트리밍(메모리 절반), PDF 렌더러 최적화
+   - 완료: JPEG 디코더 MCU 행 단위 스트리밍 — 단일 스캔 순차 JPEG은 성분마다 MCU 행 3개 고리 버퍼에 IDCT하고 한 행
+     늦게 업샘플·색 변환해 출력에 바로 씀. 3000px 최대 힙 4:2:0 40.6→27.2 MB, 4:4:4 54.0→27.2 MB, 휘도 전용(QR)
+     18.0→9.1 MB(출력 크기만큼). 프로그레시브는 계수를 끝까지 보관해야 해서 그대로(40.6 MB). 171개 파일 비트 동일.
+   - 완료: PDF — PostScript 계산기 함수(Type 4)를 레지스터 코드로 컴파일: 스택 연산은 컴파일 때 레지스터 이름
+     바꾸기로, 상수 부분식은 미리 계산(인터프리터와 같은 연산 함수), `if`/`ifelse`는 점프로, 갈래마다 결과 개수가
+     다르면 나머지 프로그램을 갈래별로 복사. 정적이지 않은 프로그램은 기존 인터프리터. 셰이딩 페이지 2.4~2.7배,
+     hayro 시험 PDF 368개 래스터 결과 동일·전체 36.5→23.5 s. 렌더러 페이지 버퍼 두 개(RGB→RGBA, RGBA→RGB)를
+     제자리 변환으로 제거.
+   - 완료: PNG — 원본 2 MiB 조각이 둘 이상인 이미지는 행 조각을 병렬 압축(pigz 방식: 앞 32 KiB 필터 결과를
+     사전으로, sync flush, Adler-32 합성). 조각은 이미지로만 정해져 스레드 수와 무관하게 같은 출력.
+     인코딩만 3000px zlib 경로 636→208 ms, 사진형 224→78 ms(4코어). 3000px 정화 0.71→0.31 s(벽시계; 프로세스
+     CPU는 약 9% 늘어 0.78 s), 화소 동일, 크기 −0.8~+0.05%.
+   - 남음: 메타데이터 C2PA(JUMBF) 판독, 프로그레시브 JPEG 디코딩 메모리
 4. 오디오 도구(ffmpeg/ffprobe) 포팅은 별도 저장소에서 같은 원칙으로 진행하고, 공통 크레이트(`photo-core`, `photo-deflate`)를 공유
 
 ## 벤치마크
@@ -96,46 +108,48 @@
 
 | file | operation | Rust wall ms | Rust CPU ms | Rust peak RSS MB | external wall ms | external CPU ms | external peak RSS MB | speed-up |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| cover_3000.jpg | probe | 1 µs | 0 µs | 66.2 | 53.2 | 53.0 | 66.2 | 59180.5× |
-| cover_3000.jpg | color | 1 µs | 0 µs | 66.2 | 99.2 | 99.0 | 66.2 | 69027.9× |
-| cover_3000.jpg | provenance | 2 µs | 0 µs | 66.2 | 98.9 | 98.7 | 66.2 | 62961.6× |
-| cover_3000.jpg | qr | 106.9 | 108.0 | 59.4 | 542.3 | 542.0 | 90.7 | 5.1× |
-| cover_3000.jpg | cover (all of the above) | 115.1 | 112.0 | 67.5 | 798.6 | 797.6 | 90.8 | 6.9× |
-| cover_3000.jpg | sanitize | 156.1 | 156.0 | 72.6 | 279.3 | 276.8 | 120.2 | 1.8× |
-| cover_3000.png | probe | 729 µs | 0 µs | 28.2 | 249.0 | 248.6 | 94.2 | 341.6× |
-| cover_3000.png | color | 3 µs | 0 µs | 28.2 | 106.6 | 106.3 | 28.0 | 37023.0× |
-| cover_3000.png | provenance | 3 µs | 0 µs | 28.2 | 99.0 | 98.9 | 28.2 | 34689.1× |
-| cover_3000.png | qr | 173.6 | 176.0 | 80.5 | 668.9 | 668.6 | 91.1 | 3.9× |
-| cover_3000.png | cover (all of the above) | 182.5 | 183.7 | 107.0 | 1167.4 | 1166.2 | 107.0 | 6.4× |
-| cover_3000.png | sanitize | 711.9 | 711.9 | 74.7 | 2801.0 | 2800.2 | 120.2 | 3.9× |
-| cover_1400.jpg | probe | 1 µs | 0 µs | 80.9 | 48.1 | 48.0 | 80.8 | 71741.2× |
-| cover_1400.jpg | color | 2 µs | 0 µs | 80.9 | 96.3 | 96.1 | 80.8 | 42185.5× |
-| cover_1400.jpg | provenance | 1 µs | 0 µs | 80.9 | 92.6 | 92.4 | 80.8 | 64530.6× |
-| cover_1400.jpg | qr | 18.1 | 20.0 | 44.2 | 114.8 | 114.6 | 44.0 | 6.3× |
-| cover_1400.jpg | cover (all of the above) | 18.6 | 20.0 | 44.2 | 342.6 | 341.8 | 49.2 | 18.4× |
-| cover_1400.jpg | sanitize | 31.2 | 32.0 | 39.6 | 116.4 | 115.5 | 39.8 | 3.7× |
-| cover_1400_adobergb.jpg | probe | 1 µs | 0 µs | 39.6 | 58.8 | 58.6 | 49.3 | 42033.5× |
-| cover_1400_adobergb.jpg | color | 8 µs | 0 µs | 39.6 | 99.2 | 99.0 | 29.2 | 12267.0× |
-| cover_1400_adobergb.jpg | provenance | 4 µs | 0 µs | 29.3 | 105.6 | 105.5 | 29.4 | 28766.4× |
-| cover_1400_adobergb.jpg | qr | 19.7 | 20.0 | 40.1 | 107.4 | 107.2 | 40.1 | 5.5× |
-| cover_1400_adobergb.jpg | cover (all of the above) | 19.2 | 20.0 | 40.1 | 365.1 | 364.3 | 49.1 | 19.1× |
-| cover_1400_adobergb.jpg | sanitize | 41.3 | 40.0 | 38.6 | 174.4 | 174.1 | 40.1 | 4.2× |
-| signature.png | sanitize | 1.5 | 0 µs | 29.3 | 78.0 | 77.3 | 29.3 | 51.0× |
-| document_scan_3p.pdf | pdf sanitize (vs pdfinfo+pdftoppm+rebuild) | 180.0 | 180.0 | 64.1 | 372.1 | 371.7 | 62.4 | 2.1× |
-| document_text_2p.pdf | pdf sanitize (vs pdfinfo+pdftoppm+rebuild) | 87.3 | 88.0 | 69.0 | 171.8 | 168.7 | 75.7 | 2.0× |
+| cover_3000.jpg | probe | 0 µs | 1 µs | 88.0 | 53.2 | 53.0 | 87.9 | 113626.2× |
+| cover_3000.jpg | color | 1 µs | 1 µs | 88.0 | 99.0 | 98.9 | 87.9 | 73006.6× |
+| cover_3000.jpg | provenance | 1 µs | 2 µs | 88.0 | 101.4 | 101.1 | 87.9 | 84223.3× |
+| cover_3000.jpg | qr | 107.8 | 107.8 | 51.3 | 549.7 | 549.4 | 90.8 | 5.1× |
+| cover_3000.jpg | cover (all of the above) | 108.3 | 108.3 | 51.0 | 810.2 | 807.5 | 90.8 | 7.5× |
+| cover_3000.jpg | sanitize | 146.5 | 146.5 | 60.6 | 281.5 | 279.6 | 120.4 | 1.9× |
+| cover_3000.png | probe | 577 µs | 578 µs | 33.6 | 248.1 | 247.8 | 94.0 | 429.8× |
+| cover_3000.png | color | 3 µs | 4 µs | 33.6 | 101.1 | 100.9 | 33.5 | 34497.0× |
+| cover_3000.png | provenance | 3 µs | 3 µs | 33.6 | 97.7 | 97.5 | 33.5 | 38677.2× |
+| cover_3000.png | qr | 179.1 | 179.1 | 86.0 | 659.9 | 659.6 | 91.1 | 3.7× |
+| cover_3000.png | cover (all of the above) | 185.7 | 185.7 | 82.4 | 1115.9 | 1115.1 | 93.9 | 6.0× |
+| cover_3000.png | sanitize | 311.5 | 778.0 | 89.8 | 2889.3 | 2888.7 | 120.3 | 9.3× |
+| cover_1400.jpg | probe | 1 µs | 1 µs | 93.9 | 48.1 | 47.9 | 93.7 | 61387.9× |
+| cover_1400.jpg | color | 2 µs | 3 µs | 93.9 | 95.6 | 95.4 | 93.7 | 42538.4× |
+| cover_1400.jpg | provenance | 2 µs | 2 µs | 93.9 | 99.4 | 99.2 | 95.4 | 61980.4× |
+| cover_1400.jpg | qr | 19.8 | 19.8 | 36.8 | 124.9 | 124.7 | 36.6 | 6.3× |
+| cover_1400.jpg | cover (all of the above) | 20.6 | 20.7 | 36.8 | 375.6 | 374.5 | 49.1 | 18.2× |
+| cover_1400.jpg | sanitize | 28.3 | 28.2 | 32.2 | 118.9 | 118.0 | 39.7 | 4.2× |
+| cover_1400_adobergb.jpg | probe | 2 µs | 3 µs | 32.2 | 46.4 | 46.2 | 49.1 | 20966.4× |
+| cover_1400_adobergb.jpg | color | 6 µs | 7 µs | 32.2 | 101.1 | 100.9 | 31.9 | 17591.0× |
+| cover_1400_adobergb.jpg | provenance | 3 µs | 3 µs | 32.2 | 107.0 | 106.7 | 31.9 | 33483.1× |
+| cover_1400_adobergb.jpg | qr | 19.6 | 19.6 | 33.3 | 115.6 | 115.4 | 33.1 | 5.9× |
+| cover_1400_adobergb.jpg | cover (all of the above) | 19.2 | 19.2 | 33.3 | 377.9 | 376.5 | 49.3 | 19.7× |
+| cover_1400_adobergb.jpg | sanitize | 41.0 | 41.0 | 32.4 | 178.6 | 178.1 | 40.1 | 4.4× |
+| signature.png | sanitize | 2.4 | 2.4 | 32.4 | 86.0 | 85.3 | 32.1 | 35.4× |
+| document_scan_3p.pdf | pdf sanitize (vs pdfinfo+pdftoppm+rebuild) | 187.9 | 187.9 | 80.2 | 360.1 | 359.7 | 77.7 | 1.9× |
+| document_text_2p.pdf | pdf sanitize (vs pdfinfo+pdftoppm+rebuild) | 69.1 | 69.1 | 59.4 | 163.5 | 163.0 | 59.1 | 2.4× |
 
-Sanitize throughput with 4 threads: Rust 19.0 files/s, Python/Pillow 5.9 files/s (3.2×)
+Sanitize throughput with 4 threads: Rust 18.5 files/s, Python/Pillow 5.5 files/s (3.3×)
 
 | file | sanitized size (Rust) | sanitized size (Python/Pillow) |
 |---|---:|---:|
 | cover_3000.jpg | 4353 KiB | 4353 KiB |
-| cover_3000.png | 10981 KiB | 10529 KiB |
+| cover_3000.png | 10979 KiB | 10529 KiB |
 | cover_1400.jpg | 730 KiB | 730 KiB |
 | cover_1400_adobergb.jpg | 866 KiB | 866 KiB |
 | signature.png | 2 KiB | 2 KiB |
 
 Rust peak RSS is the whole benchmark process (VmHWM, reset before each run); external figures are the child's ru_maxrss. CPU is user+system time.
 
-이전 측정(최적화 전)과 비교: 3000px JPEG 정화 285 → 156 ms, 커버 종합 검사 3000px JPEG 163 → 115 ms,
-PDF 3쪽 스캔 263 → 180 ms, 정화 처리량 17.6 → 19.0 files/s. 런타임 선택이 생겨 `-C target-cpu=x86-64-v3` 빌드는
+이전 측정(최적화 전)과 비교: 3000px JPEG 정화 285 → 146 ms, 커버 종합 검사 3000px JPEG 163 → 108 ms,
+3000px PNG 정화 0.71 → 0.31 s, PDF 3쪽 스캔 263 → 188 ms. Rust CPU 열은 작업자 스레드를 포함한 프로세스 전체
+CPU(getrusage)라 병렬 압축하는 PNG 정화는 벽시계보다 큽니다. 정화 처리량(4스레드)은 18.5 files/s로 이전(19.0)과
+측정 오차 안에서 같습니다(병렬 압축은 지연을 줄이지만 전체 CPU는 줄이지 않음). 이 VM의 같은 측정 반복 편차는 약 10%입니다. 런타임 선택이 생겨 `-C target-cpu=x86-64-v3` 빌드는
 더 이상 필요하지 않습니다.
