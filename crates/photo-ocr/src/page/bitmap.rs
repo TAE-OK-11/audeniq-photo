@@ -35,6 +35,28 @@ impl Bitmap {
         self.data[y * self.wpl + (x >> 5)] &= !(0x8000_0000 >> (x & 31));
     }
 
+    /// Set pixels in columns `x0..x1` of row `y` (clipped to the width),
+    /// counted a word at a time.
+    pub fn count_row_span(&self, y: usize, x0: usize, x1: usize) -> u32 {
+        let x1 = x1.min(self.width);
+        if x0 >= x1 {
+            return 0;
+        }
+        let row = self.row(y);
+        let (w0, w1) = (x0 >> 5, (x1 - 1) >> 5);
+        // MSB-first: bit for column x is 0x8000_0000 >> (x & 31).
+        let head = !0u32 >> (x0 & 31);
+        let tail = !0u32 << (31 - ((x1 - 1) & 31));
+        if w0 == w1 {
+            return (row[w0] & head & tail).count_ones();
+        }
+        let mut n = (row[w0] & head).count_ones() + (row[w1] & tail).count_ones();
+        for &w in &row[w0 + 1..w1] {
+            n += w.count_ones();
+        }
+        n
+    }
+
     pub fn row(&self, y: usize) -> &[u32] {
         &self.data[y * self.wpl..(y + 1) * self.wpl]
     }
@@ -81,5 +103,28 @@ impl Bitmap {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Bitmap;
+
+    #[test]
+    fn count_row_span_matches_pixels() {
+        let mut b = Bitmap::new(150, 2);
+        let mut seed = 99u32;
+        for x in 0..150 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if seed >> 16 & 1 == 1 {
+                b.set(x, 1);
+            }
+        }
+        for x0 in 0..152 {
+            for x1 in x0..160 {
+                let want = (x0..x1.min(150)).filter(|&x| b.get(x, 1)).count() as u32;
+                assert_eq!(b.count_row_span(1, x0, x1), want, "{x0}..{x1}");
+            }
+        }
     }
 }

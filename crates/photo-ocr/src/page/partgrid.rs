@@ -45,18 +45,14 @@ pub fn count_pixels_in_box(b: TBox, im_box: &TBox, pix: &Bitmap) -> i32 {
     let (w, h) = (b.width(), b.height());
     let sx = b.left - im_box.left;
     let sy = im_box.top - b.top;
+    let (x0, x1) = (sx.max(0), (sx + w).max(0));
     let mut n = 0;
     for y in 0..h {
         let yy = sy + y;
         if yy < 0 || yy >= pix.height as i32 {
             continue;
         }
-        for x in 0..w {
-            let xx = sx + x;
-            if xx >= 0 && xx < pix.width as i32 && pix.get(xx as usize, yy as usize) {
-                n += 1;
-            }
-        }
+        n += pix.count_row_span(yy as usize, x0 as usize, x1 as usize) as i32;
     }
     n
 }

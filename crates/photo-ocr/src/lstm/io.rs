@@ -280,9 +280,7 @@ impl NetIo {
                 &src.i[src_t * n..(src_t + 1) * n],
             );
             for (a, &b) in d.iter_mut().zip(s) {
-                if *a < b {
-                    *a = b;
-                }
+                *a = (*a).max(b);
             }
         } else {
             let (d, s) = (
