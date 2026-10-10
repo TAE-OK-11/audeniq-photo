@@ -127,7 +127,7 @@ pub struct Inflated {
 
 fn run(
     zlib: bool,
-    input: &[u8],
+    input: &[&[u8]],
     out: &mut Vec<u8>,
     limit: usize,
     truncate: bool,
@@ -142,24 +142,55 @@ fn run(
     r
 }
 
+/// Input split over several slices (PNG IDAT chunks), read in order.
+struct Parts<'a> {
+    parts: &'a [&'a [u8]],
+    /// Position in `parts[0]`.
+    pos: usize,
+    consumed: usize,
+}
+
+impl<'a> Parts<'a> {
+    /// The unread rest of the current slice (empty at the end).
+    fn current(&mut self) -> &'a [u8] {
+        while let Some((first, rest)) = self.parts.split_first() {
+            if self.pos < first.len() {
+                return &first[self.pos..];
+            }
+            self.parts = rest;
+            self.pos = 0;
+        }
+        &[]
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.pos += n;
+        self.consumed += n;
+    }
+}
+
 fn run_with(
     st: &mut InflateState,
-    input: &[u8],
+    input: &[&[u8]],
     out: &mut Vec<u8>,
     limit: usize,
     truncate: bool,
 ) -> Result<Inflated> {
-    let mut pos = 0;
+    let mut input = Parts {
+        parts: input,
+        pos: 0,
+        consumed: 0,
+    };
     loop {
         if out.len() >= limit {
             // Is there more output? Probe with a one-byte budget.
             let mut probe = Vec::with_capacity(1);
-            let (code, used, produced) = st.step(&input[pos..], &mut probe, 1);
-            pos += used;
+            let (code, used, produced) = st.step(input.current(), &mut probe, 1);
+            input.advance(used);
             if produced > 0 {
                 return if truncate {
                     Ok(Inflated {
-                        consumed: pos,
+                        consumed: input.consumed,
                         complete: false,
                     })
                 } else {
@@ -169,7 +200,7 @@ fn run_with(
             match code {
                 ReturnCode::StreamEnd => {
                     return Ok(Inflated {
-                        consumed: pos,
+                        consumed: input.consumed,
                         complete: true,
                     })
                 }
@@ -181,12 +212,12 @@ fn run_with(
         // Grow geometrically: one call fills a pre-sized output (PNG rows)
         // and unknown sizes do not over-reserve.
         let room = (limit - out.len()).min(out.len().max(64 * 1024));
-        let (code, used, produced) = st.step(&input[pos..], out, room);
-        pos += used;
+        let (code, used, produced) = st.step(input.current(), out, room);
+        input.advance(used);
         match code {
             ReturnCode::StreamEnd => {
                 return Ok(Inflated {
-                    consumed: pos,
+                    consumed: input.consumed,
                     complete: true,
                 })
             }
@@ -203,7 +234,7 @@ fn run_with(
 /// Decode a raw DEFLATE stream, appending to `out`. Returns input bytes consumed.
 /// Fails with [`Error::Limit`] if `out` would grow beyond `limit` bytes.
 pub fn inflate_raw(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize> {
-    run(false, input, out, limit, false).map(|r| r.consumed)
+    run(false, &[input], out, limit, false).map(|r| r.consumed)
 }
 
 /// Decode a zlib stream into `out`.
@@ -213,6 +244,17 @@ pub fn inflate_raw(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usiz
 /// result reports `complete: false` (the checksum is not verified then).
 pub fn inflate_zlib(
     input: &[u8],
+    out: &mut Vec<u8>,
+    limit: usize,
+    truncate: bool,
+) -> Result<Inflated> {
+    run(true, &[input], out, limit, truncate)
+}
+
+/// [`inflate_zlib`] over a stream split into consecutive slices (PNG IDAT
+/// chunks), without joining them first. `consumed` counts across slices.
+pub fn inflate_zlib_parts(
+    input: &[&[u8]],
     out: &mut Vec<u8>,
     limit: usize,
     truncate: bool,
@@ -502,5 +544,38 @@ mod tests {
                 "cut {cut}"
             );
         }
+    }
+
+    #[test]
+    fn split_input_matches_contiguous() {
+        let mut data = noise(60_000, 5);
+        data.extend(b"abcabcabd".repeat(20_000));
+        let z = compress_zlib(&data, Level::DEFAULT);
+        let mut want = Vec::new();
+        let full = inflate_zlib(&z, &mut want, data.len(), false).unwrap();
+        // Splits at every kind of boundary, with empty parts in between.
+        for size in [1, 2, 7, 4096, 65_536, z.len()] {
+            let mut parts: Vec<&[u8]> = vec![&[]];
+            for c in z.chunks(size) {
+                parts.extend([c, &[][..]]);
+            }
+            let mut out = Vec::new();
+            let r = inflate_zlib_parts(&parts, &mut out, data.len(), false).unwrap();
+            assert!(r == full && out == data, "parts of {size}");
+            // Truncating mode stops at the limit across parts too.
+            let mut out = Vec::new();
+            let r = inflate_zlib_parts(&parts, &mut out, 100_000, true).unwrap();
+            assert!(
+                !r.complete && out[..] == data[..100_000],
+                "truncated {size}"
+            );
+            // A missing tail is still an error.
+            let cut = parts.len() / 2;
+            let mut out = Vec::new();
+            if z.len() > size {
+                assert!(inflate_zlib_parts(&parts[..cut], &mut out, data.len(), false).is_err());
+            }
+        }
+        assert!(inflate_zlib_parts(&[], &mut Vec::new(), 10, false).is_err());
     }
 }

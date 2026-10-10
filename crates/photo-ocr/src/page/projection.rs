@@ -7,7 +7,7 @@ use super::blobbox::{BND_ABOVE, BND_BELOW, BND_LEFT, BND_RIGHT, BlobId, Blobs};
 use super::colpartition::{PartId, Parts};
 use super::elist::{EList, Iter};
 use super::geom::TBox;
-use super::lept::{Gray8, blockconv, box_create, clip_box_to_foreground};
+use super::lept::{Gray8, blockconv_in_place, box_create, clip_box_to_foreground};
 
 const ORIENTED_PAD_FACTOR: i32 = 8;
 const DEFAULT_PAD_FACTOR: i32 = 2;
@@ -64,7 +64,7 @@ impl TextlineProjection {
         for list in lists {
             self.project_blobs(blobs, list, &image_box, nontext_map);
         }
-        self.pix = blockconv(&self.pix, 1, 1);
+        blockconv_in_place(&mut self.pix, 1, 1);
     }
 
     /// `MoveNonTextlineBlobs`.

@@ -8,6 +8,7 @@ use crate::color::{Converter, Plane, RING, convert, output_format};
 use crate::huffman::{BitReader, HuffTable};
 use crate::idct::idct_islow;
 use crate::markers::{ColorTransform, FrameInfo, Info, assemble_icc, color_transform, next_marker};
+use crate::turn;
 use photo_core::{Bytes, Deadline, Error, Image, Limits, PixelFormat, Result};
 
 /// Progressive files with more scans than this are refused (scan bombs).
@@ -52,6 +53,10 @@ struct Stream {
     /// Output rows per row group (MCU row, or block row of a one-component
     /// scan).
     rows: usize,
+    /// Axes-swapping orientation (5..=8) or 0; rows are converted into
+    /// `band` and placed turned.
+    turn: u8,
+    band: Vec<u8>,
 }
 
 struct State {
@@ -191,6 +196,7 @@ impl Frame {
         &mut self,
         buffered: bool,
         output: Option<(ColorTransform, bool)>,
+        turn: u8,
         limits: &Limits,
     ) -> Result<()> {
         self.buffered = Some(buffered);
@@ -228,12 +234,19 @@ impl Frame {
         let rings: usize = planes.iter().map(|p| p.data.len()).sum();
         limits.alloc_size((w * h * format.channels() + rings) as u64, 1)?;
         let conv = Converter::new(&planes, transform, invert, w)?;
+        let rows = if one { 8 } else { 8 * self.max_v };
         self.stream = Some(Stream {
             planes,
             conv,
             format,
             data: vec![0; w * h * format.channels()],
-            rows: if one { 8 } else { 8 * self.max_v },
+            rows,
+            turn,
+            band: if turn != 0 {
+                vec![0; rows * w * format.channels()]
+            } else {
+                Vec::new()
+            },
         });
         Ok(())
     }
@@ -247,9 +260,16 @@ impl Stream {
         if y0 >= y1 {
             return;
         }
-        let row = width * self.format.channels();
-        self.conv
-            .rows(&self.planes, y0, &mut self.data[y0 * row..y1 * row]);
+        let ch = self.format.channels();
+        let row = width * ch;
+        if self.turn == 0 {
+            self.conv
+                .rows(&self.planes, y0, &mut self.data[y0 * row..y1 * row]);
+        } else {
+            let band = &mut self.band[..(y1 - y0) * row];
+            self.conv.rows(&self.planes, y0, band);
+            turn::place(band, y0, width, height, ch, self.turn, &mut self.data);
+        }
     }
 }
 
@@ -288,6 +308,10 @@ pub struct DecodeOptions {
     /// `false` returns the component values as stored (YCCK still has its
     /// YCC part converted to CMY), which is what PDF `DCTDecode` expects.
     pub invert_cmyk: bool,
+    /// EXIF orientation 5..=8 (the ones that swap the axes) applied while
+    /// the pixels are written: the image comes back turned, `height` wide,
+    /// without a second full-size buffer. Other values leave it as stored.
+    pub orientation: u8,
 }
 
 impl Default for DecodeOptions {
@@ -296,6 +320,7 @@ impl Default for DecodeOptions {
             luma_only: false,
             keep_ycbcr: false,
             invert_cmyk: true,
+            orientation: 1,
         }
     }
 }
@@ -405,9 +430,11 @@ pub fn decode_with(
     let (jfif, adobe) = (st.jfif, st.adobe);
     let transform = color_transform(&frame.info, jfif, adobe);
     let image = if let Some(stream) = frame.stream.take() {
+        let (w, h) = (frame.info.width, frame.info.height);
+        let (width, height) = if stream.turn != 0 { (h, w) } else { (w, h) };
         Image {
-            width: frame.info.width,
-            height: frame.info.height,
+            width,
+            height,
             format: stream.format,
             data: stream.data,
         }
@@ -425,6 +452,15 @@ pub fn decode_with(
         comments,
     };
     Ok((info, image))
+}
+
+/// The axes-swapping orientation requested, or 0.
+fn turn_of(opts: &DecodeOptions) -> u8 {
+    if (5..=8).contains(&opts.orientation) {
+        opts.orientation
+    } else {
+        0
+    }
 }
 
 /// The output transform for `transform` under the caller's options.
@@ -451,6 +487,7 @@ fn buffered_image(
     deadline: &Deadline,
 ) -> Result<Image> {
     let luma_only = luma_only && matches!(transform, ColorTransform::YCbCr | ColorTransform::Ycck);
+    let progressive = frame.progressive;
     if luma_only {
         frame.comps.truncate(1);
     }
@@ -458,7 +495,7 @@ fn buffered_image(
         for c in &mut frame.comps {
             deadline.check()?;
             let quant = c.quant.ok_or(Error::Invalid("component never scanned"))?;
-            c.plane = idct_plane(&c.coefs, &quant, c.bw, c.bh);
+            c.plane = idct_plane(&c.coefs, progressive, &quant, c.bw, c.bh);
             c.coefs = Vec::new();
         }
     }
@@ -478,21 +515,43 @@ fn buffered_image(
         })
         .collect();
     let output = output_transform(transform, luma_only, opts);
-    convert(&planes, output, opts.invert_cmyk, w, h, deadline)
+    convert(
+        &planes,
+        output,
+        opts.invert_cmyk,
+        w,
+        h,
+        turn_of(opts),
+        deadline,
+    )
 }
 
 photo_core::multiversion! {
     /// Inverse DCT of a whole buffered (progressive) component.
-    fn idct_plane(coefs: &[i16], quant: &[u16; 64], bw: usize, bh: usize) -> Vec<u8> = idct_plane_body;
+    /// `zigzag`: blocks are in zigzag order (progressive scans).
+    fn idct_plane(coefs: &[i16], zigzag: bool, quant: &[u16; 64], bw: usize, bh: usize) -> Vec<u8> = idct_plane_body;
 }
 
 #[inline(always)]
-fn idct_plane_body(coefs: &[i16], quant: &[u16; 64], bw: usize, bh: usize) -> Vec<u8> {
+fn idct_plane_body(
+    coefs: &[i16],
+    zigzag: bool,
+    quant: &[u16; 64],
+    bw: usize,
+    bh: usize,
+) -> Vec<u8> {
     let stride = bw * 8;
     let mut plane = vec![0u8; bw * bh * 64];
+    let mut natural = [0i16; 64];
     for (i, block) in coefs.chunks_exact(64).enumerate() {
         let (by, bx) = (i / bw, i % bw);
-        let block: &[i16; 64] = block.try_into().expect("64");
+        let mut block: &[i16; 64] = block.try_into().expect("64");
+        if zigzag {
+            for (k, &c) in block.iter().enumerate() {
+                natural[ZIGZAG[k]] = c;
+            }
+            block = &natural;
+        }
         idct_islow(block, quant, &mut plane[by * 8 * stride + bx * 8..], stride);
     }
     plane
@@ -571,7 +630,7 @@ fn scan_body(
                 st.opts.invert_cmyk,
             )
         });
-        frame.allocate(!direct, output, limits)?;
+        frame.allocate(!direct, output, turn_of(&st.opts), limits)?;
     } else if frame.buffered == Some(false) {
         return Err(Error::Invalid("extra scan in single-scan sequential JPEG"));
     }
@@ -766,6 +825,12 @@ fn sequential(
     Ok(())
 }
 
+// Progressive scans keep each block's coefficients in zigzag order, so a
+// spectral band is a contiguous slice and the refinement passes can find
+// nonzero coefficients with bit masks; `idct_plane` restores natural order.
+// Positions past 63 (corrupt run lengths) land on 63, as libjpeg's padded
+// natural-order table does.
+
 #[inline(always)]
 fn ac_first(
     r: &mut BitReader,
@@ -774,7 +839,7 @@ fn ac_first(
     se: usize,
     al: u32,
     eobrun: &mut u32,
-    block: &mut [i16; 64],
+    zz: &mut [i16; 64],
 ) -> Result<()> {
     if *eobrun > 0 {
         *eobrun -= 1;
@@ -782,12 +847,20 @@ fn ac_first(
     }
     let mut k = ss;
     while k <= se {
+        let fac = t.fast_ac[r.peek_fast()];
+        if fac != 0 {
+            r.skip((fac & 0xFF) as u32);
+            k += ((fac >> 8) & 15) as usize;
+            zz[k.min(63)] = ((fac >> 16) << al) as i16;
+            k += 1;
+            continue;
+        }
         let rs = r.decode(t)?;
         let (run, s) = (u32::from(rs >> 4), u32::from(rs & 15));
         if s != 0 {
             k += run as usize;
             let v = r.receive_extend(s)?;
-            block[ZIGZAG[k]] = (v << al) as i16;
+            zz[k.min(63)] = (v << al) as i16;
         } else if run == 15 {
             k += 15;
         } else {
@@ -803,6 +876,12 @@ fn ac_first(
     Ok(())
 }
 
+/// Bits `a..=b` set (`a <= b <= 63`).
+#[inline(always)]
+fn band(a: usize, b: usize) -> u64 {
+    (u64::MAX << a) & (u64::MAX >> (63 - b))
+}
+
 #[inline(always)]
 fn ac_refine(
     r: &mut BitReader,
@@ -811,59 +890,70 @@ fn ac_refine(
     se: usize,
     al: u32,
     eobrun: &mut u32,
-    block: &mut [i16; 64],
+    zz: &mut [i16; 64],
 ) -> Result<()> {
     let p1: i16 = 1 << al;
     let m1: i16 = (-1i32 << al) as i16;
-    let mut k = ss;
-    let refine = |r: &mut BitReader, c: &mut i16| {
-        if r.bit() == 1 && (*c & p1) == 0 {
-            *c = if *c >= 0 {
-                c.wrapping_add(p1)
-            } else {
-                c.wrapping_add(m1)
-            };
+    // Correction bits for the nonzero coefficients in `mask`, in order.
+    let refine = |r: &mut BitReader, zz: &mut [i16; 64], mut mask: u64| {
+        while mask != 0 {
+            let c = &mut zz[mask.trailing_zeros() as usize];
+            mask &= mask - 1;
+            if r.bit() == 1 && (*c & p1) == 0 {
+                *c = if *c >= 0 {
+                    c.wrapping_add(p1)
+                } else {
+                    c.wrapping_add(m1)
+                };
+            }
         }
     };
+    // Refinement never makes a coefficient zero, so this mask only gains
+    // the newly set ones below.
+    let mut nz = zz
+        .iter()
+        .enumerate()
+        .fold(0u64, |m, (i, &c)| m | (u64::from(c != 0) << i));
+    let mut k = ss;
     if *eobrun == 0 {
         while k <= se {
             let rs = r.decode(t)?;
-            let (mut run, s) = (i32::from(rs >> 4), rs & 15);
+            let (run, s) = (u32::from(rs >> 4), rs & 15);
             let mut value = 0i16;
             if s != 0 {
                 value = if r.bit() == 1 { p1 } else { m1 };
             } else if run != 15 {
                 *eobrun = 1 << run;
                 if run > 0 {
-                    *eobrun += r.bits(run as u32);
+                    *eobrun += r.bits(run);
                 }
                 break;
             }
-            while k <= se {
-                let c = &mut block[ZIGZAG[k]];
-                if *c != 0 {
-                    refine(r, c);
-                } else {
-                    run -= 1;
-                    if run < 0 {
-                        break;
-                    }
-                }
-                k += 1;
+            // Skip `run` zero coefficients, refining the nonzero ones
+            // passed, and stop on the next zero (or after `se`).
+            let mut zeros = !nz & band(k, se);
+            for _ in 0..run {
+                zeros &= zeros.wrapping_sub(1);
+            }
+            if zeros == 0 {
+                refine(r, zz, nz & band(k, se));
+                k = se + 1;
+            } else {
+                let z = zeros.trailing_zeros() as usize;
+                refine(r, zz, nz & band(k, se) & ((1u64 << z) - 1));
+                k = z;
             }
             if value != 0 {
-                block[ZIGZAG[k]] = value;
+                let i = k.min(63);
+                zz[i] = value;
+                nz |= 1 << i;
             }
             k += 1;
         }
     }
     if *eobrun > 0 {
-        while k <= se {
-            let c = &mut block[ZIGZAG[k]];
-            if *c != 0 {
-                refine(r, c);
-            }
-            k += 1;
+        if k <= se {
+            refine(r, zz, nz & band(k, se));
         }
         *eobrun -= 1;
     }

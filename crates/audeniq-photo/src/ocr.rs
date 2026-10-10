@@ -1,7 +1,7 @@
 //! Artwork text scan: Tesseract's `--psm 11 -l eng+kor` TSV report from
 //! the in-process port (`photo-ocr`).
 
-use crate::{Deadline, Error, Limits, PixelFormat, Result, decode_image, guard};
+use crate::{Deadline, Error, Limits, Result, decode_image, guard};
 use photo_ocr::{Model, Pix, models};
 use std::sync::OnceLock;
 
@@ -25,20 +25,9 @@ fn models() -> Result<&'static [Model; 2]> {
 pub fn ocr_tsv(data: &[u8], deadline: &Deadline) -> Result<String> {
     guard(|| {
         let img = decode_image(data, &Limits::default(), deadline)?.image;
-        let (w, h) = (img.width as usize, img.height as usize);
-        let pix = match img.format {
-            PixelFormat::Cmyk8 => {
-                let rgb: Vec<u8> = img
-                    .data
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .flat_map(|p| photo_core::cmyk_to_rgb([p[0], p[1], p[2], p[3]]))
-                    .collect();
-                Pix::from_rgb(w, h, &rgb, 3)
-            }
-            _ => Pix::from_image(&img).ok_or(Error::Invalid("unsupported pixel format"))?,
-        };
+        // Recognition works on the planes only; the decoded buffer goes
+        // (CMYK is read as RGB, converted in place).
+        let pix = Pix::from_image_owned(img);
         let [eng, kor] = models()?;
         photo_ocr::ocr_tsv_until(&pix, &[eng, kor], &|| deadline.check().is_err())
             .ok_or(Error::Limit("deadline"))

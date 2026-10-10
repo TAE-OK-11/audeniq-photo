@@ -105,44 +105,84 @@ impl Format {
 pub fn qr_count(data: &[u8], deadline: &Deadline) -> Result<usize> {
     guard(|| {
         let (w, h, gray) = intensity(data, deadline)?;
-        Ok(photo_qr::scan(&gray, w, h, deadline)?.decoded)
+        Ok(photo_qr::scan_owned(gray, w, h, deadline)?.decoded)
     })
 }
 
 /// 8-bit intensity for detectors: JPEG luma straight from the Y plane,
-/// otherwise Rec.601 luma of the decoded pixels.
+/// otherwise Rec.601 luma of the decoded pixels, computed in place in the
+/// decoded buffer (CMYK through its RGB rendering, alpha ignored).
 pub(crate) fn intensity(data: &[u8], deadline: &Deadline) -> Result<(usize, usize, Vec<u8>)> {
     let img = match Format::detect(data) {
         Some(Format::Jpeg) => photo_jpeg::decode_luma(data, &Limits::default(), deadline)?.1,
         _ => decode_image(data, &Limits::default(), deadline)?.image,
     };
-    let gray = if img.format == PixelFormat::Gray8 {
-        img.data
-    } else {
-        photo_qr::to_gray(&gray_source(&img), gray_channels(&img))
-    };
-    Ok((img.width as usize, img.height as usize, gray))
+    Ok((img.width as usize, img.height as usize, luma(img)))
 }
 
-fn gray_source(img: &Image) -> std::borrow::Cow<'_, [u8]> {
-    if img.format == PixelFormat::Cmyk8 {
-        std::borrow::Cow::Owned(
-            img.data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .flat_map(|p| photo_core::cmyk_to_rgb([p[0], p[1], p[2], p[3]]))
-                .collect(),
-        )
-    } else {
-        std::borrow::Cow::Borrowed(&img.data)
+/// Rec.601 luma (as [`photo_qr::to_gray`]) of `img`, reusing its buffer.
+fn luma(img: Image) -> Vec<u8> {
+    let mut gray = img.data;
+    match img.format {
+        PixelFormat::Gray8 => {}
+        PixelFormat::GrayAlpha8 => luma_in_place::<2>(&mut gray, |p| p[0]),
+        PixelFormat::Rgb8 => luma_in_place::<3>(&mut gray, |p| photo_qr::luma(p[0], p[1], p[2])),
+        PixelFormat::Rgba8 => luma_in_place::<4>(&mut gray, |p| photo_qr::luma(p[0], p[1], p[2])),
+        PixelFormat::Cmyk8 => luma_in_place::<4>(&mut gray, |p| {
+            let [r, g, b] = photo_core::cmyk_to_rgb(p);
+            photo_qr::luma(r, g, b)
+        }),
     }
+    gray
 }
 
-fn gray_channels(img: &Image) -> usize {
-    if img.format == PixelFormat::Cmyk8 {
-        3
-    } else {
-        img.format.channels()
+/// Replace `N`-byte pixels by one byte each, front to back (pixel `i` is
+/// read before byte `i` is written since `i <= N * i`), and release the
+/// tail.
+fn luma_in_place<const N: usize>(buf: &mut Vec<u8>, f: impl Fn([u8; N]) -> u8) {
+    let n = buf.len() / N;
+    for i in 0..n {
+        let s = i * N;
+        buf[i] = f(buf[s..s + N].try_into().unwrap());
+    }
+    buf.truncate(n);
+    buf.shrink_to_fit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn luma_matches_copying_conversion() {
+        let data: Vec<u8> = (0..4 * 777u32).map(|i| (i * 37 % 256) as u8).collect();
+        for format in [
+            PixelFormat::Gray8,
+            PixelFormat::GrayAlpha8,
+            PixelFormat::Rgb8,
+            PixelFormat::Rgba8,
+            PixelFormat::Cmyk8,
+        ] {
+            let n = format.channels();
+            let img = Image {
+                width: 777,
+                height: 1,
+                format,
+                data: data[..777 * n].to_vec(),
+            };
+            let want = if format == PixelFormat::Cmyk8 {
+                let rgb: Vec<u8> = img
+                    .data
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| photo_core::cmyk_to_rgb(*p))
+                    .collect();
+                photo_qr::to_gray(&rgb, 3)
+            } else {
+                photo_qr::to_gray(&img.data, n)
+            };
+            assert_eq!(luma(img), want, "{format:?}");
+        }
     }
 }
