@@ -2,7 +2,8 @@
 //! (development aid): `heap_peak FILE...`.
 //!
 //! Peak heap is measured with a counting allocator above the input buffer,
-//! so it is the operation's own working set, independent of RSS noise.
+//! so it is the operation's own working set; the resident-set rise is shown
+//! next to it (memory reserved but never touched is not resident).
 use audeniq_photo::{Deadline, Kind};
 use mimalloc::MiMalloc as System;
 use std::alloc::{GlobalAlloc, Layout};
@@ -45,51 +46,104 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-fn measure<T>(label: &str, file: &str, f: impl Fn() -> T) {
-    // Warm-up run (thread pools, lazy tables), then the best of five.
-    drop(f());
+/// `VmRSS`/`VmHWM` of this process in kB.
+fn proc_kb(key: &str) -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with(key))?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
+/// Run operation `op` on `data` once; `false` if it is not applicable.
+fn run(op: &str, data: &[u8]) -> bool {
+    let d = Deadline::NONE;
+    let kind = if data.starts_with(b"\x89PNG") {
+        Kind::Png
+    } else {
+        Kind::Jpeg
+    };
+    match op {
+        "pdf" => drop(std::hint::black_box(audeniq_photo::pdf::sanitize_pdf(
+            data, &d,
+        ))),
+        "qr" => drop(std::hint::black_box(audeniq_photo::qr_count(data, &d))),
+        "cover" => drop(std::hint::black_box(audeniq_photo::inspect_cover(data, &d))),
+        "sanitize" => drop(std::hint::black_box(audeniq_photo::sanitize(
+            data, kind, &d,
+        ))),
+        "ocr" => drop(std::hint::black_box(audeniq_photo::ocr_tsv(data, &d))),
+        _ => return false,
+    }
+    true
+}
+
+/// Best-of-five wall time and peak heap (after a warm-up run).
+fn measure(op: &str, data: &[u8]) -> (f64, usize) {
+    run(op, data);
     let (mut ms, mut peak) = (f64::MAX, 0);
     for _ in 0..5 {
         let base = CUR.load(Ordering::Relaxed);
         PEAK.store(base, Ordering::Relaxed);
         let t0 = Instant::now();
-        let r = f();
+        run(op, data);
         ms = ms.min(t0.elapsed().as_secs_f64() * 1000.0);
         peak = peak.max(PEAK.load(Ordering::Relaxed) - base);
-        drop(r);
     }
-    println!(
-        "{file:<14} {label:<9} {ms:>8.1} ms {:>8.1} MB",
-        peak as f64 / 1e6
-    );
+    (ms, peak)
 }
 
 fn main() {
-    let deadline = || Deadline::NONE;
-    for path in std::env::args().skip(1) {
-        let data = std::fs::read(&path).expect("read input");
-        let name = std::path::Path::new(&path)
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--rss-child") {
+        // A fresh process: the resident high-water mark of one cold run
+        // above the resident size with the input loaded.
+        let data = std::fs::read(&args[3]).expect("read input");
+        let rss0 = proc_kb("VmRSS:");
+        let heap0 = CUR.load(Ordering::Relaxed);
+        PEAK.store(heap0, Ordering::Relaxed);
+        run(&args[2], &data);
+        println!("{}", proc_kb("VmHWM:").saturating_sub(rss0));
+        // Heap kept after the call (lazily loaded models and tables).
+        eprintln!(
+            "cold peak {:.1} MB, retained {:.1} MB",
+            PEAK.load(Ordering::Relaxed).saturating_sub(heap0) as f64 / 1e6,
+            CUR.load(Ordering::Relaxed).saturating_sub(heap0) as f64 / 1e6
+        );
+        return;
+    }
+    let exe = std::env::current_exe().expect("own path");
+    for path in &args[1..] {
+        let data = std::fs::read(path).expect("read input");
+        let name = std::path::Path::new(path)
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        if data.starts_with(b"%PDF") {
-            measure("pdf", &name, || {
-                audeniq_photo::pdf::sanitize_pdf(&data, &deadline())
-            });
-            continue;
-        }
-        let kind = if data.starts_with(b"\x89PNG") {
-            Kind::Png
+        let ops: &[&str] = if data.starts_with(b"%PDF") {
+            &["pdf"]
         } else {
-            Kind::Jpeg
+            &["qr", "cover", "sanitize", "ocr"]
         };
-        measure("qr", &name, || audeniq_photo::qr_count(&data, &deadline()));
-        measure("cover", &name, || {
-            audeniq_photo::inspect_cover(&data, &deadline())
-        });
-        measure("sanitize", &name, || {
-            audeniq_photo::sanitize(&data, kind, &deadline())
-        });
+        for op in ops {
+            let (ms, peak) = measure(op, &data);
+            let rss_kb: u64 = std::process::Command::new(&exe)
+                .args(["--rss-child", op, path])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok()?.trim().parse().ok())
+                .unwrap_or(0);
+            println!(
+                "{name:<22} {op:<9} {ms:>8.1} ms {:>7.1} MB heap {:>7.1} MB rss",
+                peak as f64 / 1e6,
+                rss_kb as f64 / 1e3
+            );
+        }
     }
 }

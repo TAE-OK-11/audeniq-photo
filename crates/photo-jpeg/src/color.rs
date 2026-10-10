@@ -237,12 +237,30 @@ pub(crate) fn convert(
     invert_cmyk: bool,
     width: usize,
     height: usize,
+    turn: u8,
     deadline: &Deadline,
 ) -> Result<Image> {
     let format = output_format(transform);
+    let ch = format.channels();
     let mut conv = Converter::new(planes, transform, invert_cmyk, width)?;
-    let mut data = vec![0u8; width * height * format.channels()];
-    for (i, chunk) in data.chunks_mut(64 * width * format.channels()).enumerate() {
+    let mut data = vec![0u8; width * height * ch];
+    if turn != 0 {
+        // Convert 64 rows at a time and place them turned (`crate::turn`).
+        let mut band = vec![0u8; 64 * width * ch];
+        for y0 in (0..height).step_by(64) {
+            deadline.check()?;
+            let band = &mut band[..(height - y0).min(64) * width * ch];
+            conv.rows(planes, y0, band);
+            crate::turn::place(band, y0, width, height, ch, turn, &mut data);
+        }
+        return Ok(Image {
+            width: height as u32,
+            height: width as u32,
+            format,
+            data,
+        });
+    }
+    for (i, chunk) in data.chunks_mut(64 * width * ch).enumerate() {
         deadline.check()?;
         conv.rows(planes, i * 64, chunk);
     }

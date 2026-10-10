@@ -15,6 +15,7 @@ mod encoder;
 mod huffman;
 mod idct;
 mod markers;
+mod turn;
 
 pub use decoder::{DecodeOptions, decode, decode_luma, decode_with};
 pub use encoder::{Encoder, Subsampling, encode};

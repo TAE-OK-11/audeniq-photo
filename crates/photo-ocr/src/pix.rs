@@ -535,6 +535,22 @@ fn blend_over_white(s: u8, alpha: u8) -> u8 {
 impl Pix {
     /// From a decoded image as Leptonica would hold it. CMYK is not
     /// accepted here (see [`Pix::from_cmyk`]).
+    /// [`Pix::from_image`] that takes the image: grey keeps its buffer,
+    /// CMYK becomes RGB in place first, other buffers are freed as soon as
+    /// the planes exist.
+    pub fn from_image_owned(img: photo_core::Image) -> Pix {
+        use photo_core::PixelFormat::*;
+        match img.format {
+            Gray8 => Pix::Gray(Gray {
+                width: img.width as usize,
+                height: img.height as usize,
+                data: img.data,
+            }),
+            Cmyk8 => Pix::from_image(&img.into_rgb8()).expect("RGB"),
+            _ => Pix::from_image(&img).expect("supported format"),
+        }
+    }
+
     pub fn from_image(img: &photo_core::Image) -> Option<Pix> {
         use photo_core::PixelFormat::*;
         let (w, h) = (img.width as usize, img.height as usize);

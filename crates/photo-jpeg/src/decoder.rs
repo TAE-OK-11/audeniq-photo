@@ -8,6 +8,7 @@ use crate::color::{Converter, Plane, RING, convert, output_format};
 use crate::huffman::{BitReader, HuffTable};
 use crate::idct::idct_islow;
 use crate::markers::{ColorTransform, FrameInfo, Info, assemble_icc, color_transform, next_marker};
+use crate::turn;
 use photo_core::{Bytes, Deadline, Error, Image, Limits, PixelFormat, Result};
 
 /// Progressive files with more scans than this are refused (scan bombs).
@@ -52,6 +53,10 @@ struct Stream {
     /// Output rows per row group (MCU row, or block row of a one-component
     /// scan).
     rows: usize,
+    /// Axes-swapping orientation (5..=8) or 0; rows are converted into
+    /// `band` and placed turned.
+    turn: u8,
+    band: Vec<u8>,
 }
 
 struct State {
@@ -191,6 +196,7 @@ impl Frame {
         &mut self,
         buffered: bool,
         output: Option<(ColorTransform, bool)>,
+        turn: u8,
         limits: &Limits,
     ) -> Result<()> {
         self.buffered = Some(buffered);
@@ -228,12 +234,19 @@ impl Frame {
         let rings: usize = planes.iter().map(|p| p.data.len()).sum();
         limits.alloc_size((w * h * format.channels() + rings) as u64, 1)?;
         let conv = Converter::new(&planes, transform, invert, w)?;
+        let rows = if one { 8 } else { 8 * self.max_v };
         self.stream = Some(Stream {
             planes,
             conv,
             format,
             data: vec![0; w * h * format.channels()],
-            rows: if one { 8 } else { 8 * self.max_v },
+            rows,
+            turn,
+            band: if turn != 0 {
+                vec![0; rows * w * format.channels()]
+            } else {
+                Vec::new()
+            },
         });
         Ok(())
     }
@@ -247,9 +260,16 @@ impl Stream {
         if y0 >= y1 {
             return;
         }
-        let row = width * self.format.channels();
-        self.conv
-            .rows(&self.planes, y0, &mut self.data[y0 * row..y1 * row]);
+        let ch = self.format.channels();
+        let row = width * ch;
+        if self.turn == 0 {
+            self.conv
+                .rows(&self.planes, y0, &mut self.data[y0 * row..y1 * row]);
+        } else {
+            let band = &mut self.band[..(y1 - y0) * row];
+            self.conv.rows(&self.planes, y0, band);
+            turn::place(band, y0, width, height, ch, self.turn, &mut self.data);
+        }
     }
 }
 
@@ -288,6 +308,10 @@ pub struct DecodeOptions {
     /// `false` returns the component values as stored (YCCK still has its
     /// YCC part converted to CMY), which is what PDF `DCTDecode` expects.
     pub invert_cmyk: bool,
+    /// EXIF orientation 5..=8 (the ones that swap the axes) applied while
+    /// the pixels are written: the image comes back turned, `height` wide,
+    /// without a second full-size buffer. Other values leave it as stored.
+    pub orientation: u8,
 }
 
 impl Default for DecodeOptions {
@@ -296,6 +320,7 @@ impl Default for DecodeOptions {
             luma_only: false,
             keep_ycbcr: false,
             invert_cmyk: true,
+            orientation: 1,
         }
     }
 }
@@ -405,9 +430,11 @@ pub fn decode_with(
     let (jfif, adobe) = (st.jfif, st.adobe);
     let transform = color_transform(&frame.info, jfif, adobe);
     let image = if let Some(stream) = frame.stream.take() {
+        let (w, h) = (frame.info.width, frame.info.height);
+        let (width, height) = if stream.turn != 0 { (h, w) } else { (w, h) };
         Image {
-            width: frame.info.width,
-            height: frame.info.height,
+            width,
+            height,
             format: stream.format,
             data: stream.data,
         }
@@ -425,6 +452,15 @@ pub fn decode_with(
         comments,
     };
     Ok((info, image))
+}
+
+/// The axes-swapping orientation requested, or 0.
+fn turn_of(opts: &DecodeOptions) -> u8 {
+    if (5..=8).contains(&opts.orientation) {
+        opts.orientation
+    } else {
+        0
+    }
 }
 
 /// The output transform for `transform` under the caller's options.
@@ -479,7 +515,15 @@ fn buffered_image(
         })
         .collect();
     let output = output_transform(transform, luma_only, opts);
-    convert(&planes, output, opts.invert_cmyk, w, h, deadline)
+    convert(
+        &planes,
+        output,
+        opts.invert_cmyk,
+        w,
+        h,
+        turn_of(opts),
+        deadline,
+    )
 }
 
 photo_core::multiversion! {
@@ -586,7 +630,7 @@ fn scan_body(
                 st.opts.invert_cmyk,
             )
         });
-        frame.allocate(!direct, output, limits)?;
+        frame.allocate(!direct, output, turn_of(&st.opts), limits)?;
     } else if frame.buffered == Some(false) {
         return Err(Error::Invalid("extra scan in single-scan sequential JPEG"));
     }
