@@ -2,7 +2,6 @@
 
 use crate::{ChunkIter, Info, MAX_TEXT_TOTAL, parse_text};
 use photo_core::{Deadline, Error, Image, Limits, PixelFormat, Result};
-use std::borrow::Cow;
 
 struct Parsed<'a> {
     info: Info,
@@ -312,14 +311,9 @@ pub fn decode(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result<(Info
     let fmt = out_format(&info);
     let out_len = limits.alloc_size((w * h) as u64, fmt.channels() as u64)?;
 
-    let stream: Cow<[u8]> = if idat.len() == 1 {
-        Cow::Borrowed(idat[0])
-    } else {
-        Cow::Owned(idat.concat())
-    };
+    // IDAT chunks are inflated in place, never joined into one copy.
     let mut raw = Vec::with_capacity(raw_len);
-    let r = photo_deflate::inflate_zlib(&stream, &mut raw, raw_len, true)?;
-    drop(stream);
+    let r = photo_deflate::inflate_zlib_parts(&idat, &mut raw, raw_len, true)?;
     if raw.len() != raw_len || (r.complete && raw.len() < raw_len) {
         return Err(Error::Truncated);
     }

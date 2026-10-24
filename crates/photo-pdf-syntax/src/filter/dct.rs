@@ -42,6 +42,7 @@ pub(crate) fn decode(
         keep_ycbcr: params.get::<u8>(COLOR_TRANSFORM) == Some(0),
         // PDF applies its own `/Decode` array to CMYK samples.
         invert_cmyk: false,
+        ..photo_jpeg::DecodeOptions::default()
     };
     let (_, image) = photo_jpeg::decode_with(&data, &limits, &Deadline::NONE, &opts).ok()?;
 

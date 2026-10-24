@@ -22,7 +22,7 @@ pub fn inspect_cover(data: &[u8], deadline: &Deadline) -> Result<CoverReport> {
         let probe = probe(data)?;
         let meta = photo_meta::read(data)?;
         let qr = crate::intensity(data, deadline)
-            .and_then(|(w, h, gray)| Ok(photo_qr::scan(&gray, w, h, deadline)?.decoded));
+            .and_then(|(w, h, gray)| Ok(photo_qr::scan_owned(gray, w, h, deadline)?.decoded));
         Ok(CoverReport {
             probe,
             color: color_report(&meta),

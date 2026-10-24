@@ -169,15 +169,17 @@ impl Image {
                     data[i * 3..i * 3 + 3].copy_from_slice(&rgb);
                 }
                 data.truncate(pixels * 3);
+                data.shrink_to_fit();
             }
             PixelFormat::Gray8 | PixelFormat::GrayAlpha8 => {
+                // Expand in place back to front: pixel `i` is read from
+                // `i * step` before anything at or after `3 * i` is written.
                 let step = format.channels();
-                let mut out = vec![0u8; pixels * 3];
-                for (i, px) in out.chunks_exact_mut(3).enumerate() {
+                data.resize(pixels * 3, 0);
+                for i in (0..pixels).rev() {
                     let g = data[i * step];
-                    px.copy_from_slice(&[g, g, g]);
+                    data[i * 3..i * 3 + 3].copy_from_slice(&[g, g, g]);
                 }
-                data = out;
             }
         }
         Image {

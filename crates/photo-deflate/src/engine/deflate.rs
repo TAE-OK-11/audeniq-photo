@@ -806,6 +806,15 @@ fn lm_init(state: &mut State) {
     state.match_available = false;
     state.match_start = 0;
     state.ins_h = 0;
+    // Audeniq: start over completely, as a fresh state does, so a reused
+    // (pooled) state compresses byte for byte like a new one. The match
+    // finders compare candidates past the end of the input, so stale window
+    // bytes from an earlier stream would otherwise change the choice; the
+    // image strategy's cost estimate is history too.
+    state.window.filled_mut().fill(0);
+    state.prev.as_mut_slice().fill(0);
+    state.image_cost = [64; 256];
+    state.image_cost_mark = 0;
 }
 
 fn lm_set_level(state: &mut State, level: i8) {

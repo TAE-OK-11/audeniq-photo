@@ -330,3 +330,36 @@ fn malformed_frame_streams_are_refused() {
         );
     }
 }
+
+#[test]
+fn page_failures_stop_the_overlapped_writer() {
+    // Pages are produced while the previous one is encoded on a helper
+    // thread; a bad page in the middle or at the end must fail the whole
+    // document with that page's error (and never hang or emit a prefix).
+    let img = audeniq_photo::Image {
+        width: 64,
+        height: 48,
+        format: audeniq_photo::PixelFormat::Rgb8,
+        data: (0..64 * 48 * 3).map(|i| (i % 251) as u8).collect(),
+    };
+    let good = audeniq_photo::sanitize::encode_jpeg(&img, 90).unwrap();
+    let bad = b"\xFF\xD8\xFF not a jpeg".to_vec();
+    let ok =
+        pdf::image_only_pdf(&[good.clone(), good.clone(), good.clone()], &Deadline::NONE).unwrap();
+    assert_eq!(pdf::info(&ok).unwrap().pages, 3);
+    for pages in [
+        vec![bad.clone(), good.clone(), good.clone()],
+        vec![good.clone(), bad.clone(), good.clone()],
+        vec![good.clone(), good.clone(), bad.clone()],
+    ] {
+        assert!(matches!(
+            pdf::image_only_pdf(&pages, &Deadline::NONE),
+            Err(audeniq_photo::Error::Invalid(_))
+        ));
+    }
+    let expired = Deadline::after(std::time::Duration::ZERO);
+    assert_eq!(
+        pdf::image_only_pdf(&[good.clone(), good], &expired),
+        Err(audeniq_photo::Error::Limit("deadline"))
+    );
+}

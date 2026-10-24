@@ -124,31 +124,68 @@ pub fn decode_image(data: &[u8], limits: &Limits, deadline: &Deadline) -> Result
                 orientation,
             })
         }
-        Format::Jpeg => {
-            let (segs, _) = photo_jpeg::segments(data)?;
-            // Pillow opens multi-picture JPEGs as MPO, which the sanitizer refused.
-            let mpo = segs.iter().any(|s| {
-                s.marker == 0xE2
-                    && s.data.starts_with(b"MPF\0")
-                    && mpf_images(&s.data[4..]).is_some_and(|n| n > 1)
-            });
-            if mpo {
-                return Err(Error::Invalid("static JPEG/PNG required"));
-            }
-            let (info, image) = photo_jpeg::decode(data, limits, deadline)?;
-            let orientation = info
-                .exif
-                .as_deref()
+        Format::Jpeg => decode_jpeg(data, limits, deadline, false),
+    }
+}
+
+/// JPEG branch of [`decode_image`]. With `turn`, an orientation that swaps
+/// the axes (5..=8) is applied by the decoder while it writes the pixels
+/// (no second full-size buffer); the result then reports orientation 1.
+fn decode_jpeg(data: &[u8], limits: &Limits, deadline: &Deadline, turn: bool) -> Result<Decoded> {
+    let (segs, _) = photo_jpeg::segments(data)?;
+    // Pillow opens multi-picture JPEGs as MPO, which the sanitizer refused.
+    let mpo = segs.iter().any(|s| {
+        s.marker == 0xE2
+            && s.data.starts_with(b"MPF\0")
+            && mpf_images(&s.data[4..]).is_some_and(|n| n > 1)
+    });
+    if mpo {
+        return Err(Error::Invalid("static JPEG/PNG required"));
+    }
+    let orientation_of = |info: &photo_jpeg::Info| {
+        info.exif
+            .as_deref()
+            .and_then(exif_orientation)
+            .or_else(|| info.xmp.as_deref().and_then(xmp_orientation))
+    };
+    // The orientation as the headers before the first scan give it (the
+    // decoder's own reading, checked below, also sees later segments).
+    let early = turn
+        .then(|| {
+            let app1 = |prefix: &[u8], skip: usize| {
+                segs.iter()
+                    .find(|s| s.marker == 0xE1 && s.data.starts_with(prefix) && s.data.len() > skip)
+                    .map(|s| &s.data[skip..])
+            };
+            app1(b"Exif\0", 6)
                 .and_then(exif_orientation)
-                .or_else(|| info.xmp.as_deref().and_then(xmp_orientation));
-            Ok(Decoded {
-                format,
+                .or_else(|| app1(b"http://ns.adobe.com/xap/1.0/\0", 29).and_then(xmp_orientation))
+        })
+        .flatten()
+        .filter(|o| (5..=8).contains(o));
+    if let Some(o) = early {
+        let opts = photo_jpeg::DecodeOptions {
+            orientation: o as u8,
+            ..photo_jpeg::DecodeOptions::default()
+        };
+        let (info, image) = photo_jpeg::decode_with(data, limits, deadline, &opts)?;
+        if orientation_of(&info) == Some(o) {
+            return Ok(Decoded {
+                format: Format::Jpeg,
                 image,
                 icc_profile: info.icc_profile.filter(|p| !p.is_empty()),
-                orientation,
-            })
+                orientation: Some(1),
+            });
         }
+        // A later segment changed the answer: decode as stored instead.
     }
+    let (info, image) = photo_jpeg::decode(data, limits, deadline)?;
+    Ok(Decoded {
+        format: Format::Jpeg,
+        image,
+        orientation: orientation_of(&info),
+        icc_profile: info.icc_profile.filter(|p| !p.is_empty()),
+    })
 }
 
 fn mpf_images(tiff: &[u8]) -> Option<u32> {
@@ -218,7 +255,10 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
         max_alloc: 256 * 1024 * 1024,
         ..Limits::default()
     };
-    let d = decode_image(data, &limits, deadline)?;
+    let d = match Format::detect(data) {
+        Some(Format::Jpeg) => decode_jpeg(data, &limits, deadline, true)?,
+        _ => decode_image(data, &limits, deadline)?,
+    };
     let mut image = orient::apply(d.image, d.orientation.unwrap_or(1));
     if image.width > MAX_SIDE || image.height > MAX_SIDE {
         return Err(Error::Invalid("image dimensions exceeded"));
@@ -228,25 +268,21 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
         let profile =
             photo_icc::Profile::parse(icc).map_err(|_| Error::Invalid("invalid ICC profile"))?;
         // Pillow modes: L/LA → gray, RGB/RGBA/P → RGB, CMYK.
-        let (src, channels) = match image.format {
-            PixelFormat::Gray8 => (std::mem::take(&mut image.data), 1),
-            PixelFormat::GrayAlpha8 => (
-                image.data.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
-                1,
-            ),
-            PixelFormat::Rgb8 => (std::mem::take(&mut image.data), 3),
-            PixelFormat::Rgba8 => (
-                image
-                    .data
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .flat_map(|p| [p[0], p[1], p[2]])
-                    .collect(),
-                3,
-            ),
-            PixelFormat::Cmyk8 => (std::mem::take(&mut image.data), 4),
+        // Alpha is dropped in place (the profile converts color only).
+        let channels = match image.format {
+            PixelFormat::Gray8 => 1,
+            PixelFormat::GrayAlpha8 => {
+                drop_alpha::<2, 1>(&mut image.data);
+                1
+            }
+            PixelFormat::Rgb8 => 3,
+            PixelFormat::Rgba8 => {
+                drop_alpha::<4, 3>(&mut image.data);
+                3
+            }
+            PixelFormat::Cmyk8 => 4,
         };
+        let src = std::mem::take(&mut image.data);
         let t = photo_icc::Transform::to_srgb(&profile, channels)
             .map_err(|_| Error::Invalid("ICC profile does not apply to this image"))?;
         let pixels = image.width as usize * image.height as usize;
@@ -259,6 +295,7 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
             for (s, d) in src.chunks(channels * 4096).zip(v.chunks_mut(3 * 4096)) {
                 t.convert(s, d);
             }
+            drop(src);
             v
         };
         image = Image {
@@ -271,6 +308,17 @@ pub fn pixels(data: &[u8], deadline: &Deadline) -> Result<Image> {
         image = image.into_rgb8();
     }
     Ok(image)
+}
+
+/// Keep the first `M` of every `N` bytes, compacting front to back, and
+/// release the tail.
+fn drop_alpha<const N: usize, const M: usize>(buf: &mut Vec<u8>) {
+    let n = buf.len() / N;
+    for i in 0..n {
+        buf.copy_within(i * N..i * N + M, i * M);
+    }
+    buf.truncate(n * M);
+    buf.shrink_to_fit();
 }
 
 /// Sanitize one image upload. Returns the new file's bytes.

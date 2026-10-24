@@ -42,6 +42,32 @@ for name in cases:
 print("\n".join(cases))
 "#;
 
+/// EXIF orientation 5..=8 by definition (Pillow's `exif_transpose`).
+fn turn(img: &photo_core::Image, orientation: u8) -> photo_core::Image {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let ch = img.format.channels();
+    let mut data = vec![0u8; img.data.len()];
+    for y in 0..w {
+        for x in 0..h {
+            let (sx, sy) = match orientation {
+                5 => (y, x),
+                6 => (y, h - 1 - x),
+                7 => (w - 1 - y, h - 1 - x),
+                _ => (w - 1 - y, x),
+            };
+            let s = (sy * w + sx) * ch;
+            let d = (y * h + x) * ch;
+            data[d..d + ch].copy_from_slice(&img.data[s..s + ch]);
+        }
+    }
+    photo_core::Image {
+        width: h as u32,
+        height: w as u32,
+        format: img.format,
+        data,
+    }
+}
+
 fn ffmpeg_cases(dir: &std::path::Path) -> Vec<String> {
     // 4:4:0 and 4:1:1 via ffmpeg's mjpeg encoder (decoded by Pillow).
     let mut out = Vec::new();
@@ -145,6 +171,22 @@ fn matches_pillow_bit_for_bit() {
                 .max()
                 .unwrap_or(0);
             failures.push(format!("{name}: {diffs} samples differ (max {maxd})"));
+        }
+        // Orientations that swap the axes, applied while decoding, equal
+        // the stored image turned afterwards.
+        for orientation in 5..=8u8 {
+            let opts = photo_jpeg::DecodeOptions {
+                orientation,
+                ..photo_jpeg::DecodeOptions::default()
+            };
+            let (_, turned) =
+                photo_jpeg::decode_with(&jpg, &Limits::default(), &Deadline::NONE, &opts).unwrap();
+            let want = turn(&img, orientation);
+            if (turned.width, turned.height) != (want.width, want.height)
+                || turned.data != want.data
+            {
+                failures.push(format!("{name}: orientation {orientation} differs"));
+            }
         }
     }
     std::fs::remove_dir_all(&dir).ok();

@@ -96,5 +96,16 @@ let meta = audeniq_photo::metadata_file(Path::new("master.wav"))?; // 오디오 
 | JPEG 디코딩 최대 힙 3000px 4:2:0 / 4:4:4 | 40.6 / 54.0 MB | 27.2 / 27.2 MB | MCU 행 스트리밍, 비트 동일 (프로그레시브 제외) |
 | PDF 셰이딩 페이지 (PostScript 함수) | 1.4~3.1 s | 0.6~1.6 s | 레지스터 코드 컴파일, 래스터 동일 |
 | PNG 인코딩 3000px zlib 경로 / 사진형 (4코어) | 636 / 224 ms | 208 / 78 ms | 병렬 조각 압축, 화소 동일, 크기 ±0.1% 안 |
+| 프로그레시브 JPEG 디코딩 3000px | 195 ms | 168 ms | 지그재그 계수·비트마스크 정밀화, 비트 동일 (libjpeg-turbo 152 ms) |
+| EXIF 회전(6) 3000px JPEG 정화 | 194 ms | 169 ms | 타일 단위 한 번 복사, 뒤집기는 제자리 |
+| CMYK JPEG 3000px 커버 검사 최대 힙 | 72 MB | 45 MB | 휘도를 디코딩 버퍼 안에서 계산 |
+| PDF 정화 3쪽 스캔 / 2쪽 텍스트 | 212 / 79 ms | 166 / 57 ms | 다음 쪽 렌더링과 이전 쪽 JPEG 인코딩을 겹침, 출력 바이트 동일, 최대 힙 +11~13 MB(래스터 한 장) |
+| OCR 3000px 커버 최대 힙 | 120 MB | 54 MB | 레이아웃 3×3 평균 필터를 누적 표 없이 제자리 계산, 디코딩 버퍼를 평면 생성 직후 해제, TSV 동일 |
+| EXIF 회전(5~8) JPEG 정화 최대 힙 3000px | 54 MB | 34 MB | 디코더가 회전된 위치에 바로 씀(회전 전 이미지 없음), 바이트 동일 |
 
 런타임 SIMD는 `AUDENIQ_PHOTO_NO_SIMD=1`(전부)과 `AUDENIQ_PHOTO_NO_VNNI=1`(AVX-VNNI만)로 끌 수 있고, 어느 경로든 결과는 같습니다.
+
+메모리: 라이브러리는 할당기를 고르지 않습니다. mimalloc을 쓰는 프로세스는 해제한 메모리를 잠시 붙잡아 두므로,
+업로드를 연달아 처리하는 서비스에서는 `MIMALLOC_PURGE_DELAY=0`으로 바로 돌려주게 하면 RSS 최고치가 크게 줄어듭니다
+(작업당 새 프로세스 기준 PDF 정화 65→40 MB, 3000px PNG 정화 71→57 MB, 속도 차이 5% 안). 작업별 최대 힙·RSS는
+`cargo run --release -p photo-bench --example heap_peak -- FILE...`로 잴 수 있습니다.

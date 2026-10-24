@@ -218,64 +218,127 @@ fn encode_pieces(
         } else {
             z.end_piece(&mut out);
         }
+        // A piece may wait for earlier ones: keep only its bytes.
+        out.shrink_to_fit();
         (out, adler.finish(), len)
     };
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(pieces.len());
-    let mut done: Vec<Option<(Vec<u8>, u32, u64)>> = vec![None; pieces.len()];
+    let mut out = Vec::new();
+    write_header(&mut out, img.width, img.height, img.format)?;
+    // Pieces are written as soon as every earlier one is, then freed, so
+    // only pieces finished out of order wait (not the whole stream).
+    let state = std::sync::Mutex::new(Assembly {
+        out: Assembler::new(out),
+        waiting: (0..pieces.len()).map(|_| None).collect(),
+        next: 0,
+    });
+    let deliver = |i: usize, piece: (Vec<u8>, u32, u64)| {
+        let mut guard = state.lock().expect("no worker panicked");
+        let Assembly { out, waiting, next } = &mut *guard;
+        waiting[i] = Some(piece);
+        if *next == 0
+            && let Some(first) = &waiting[0]
+        {
+            // Size the file from the first piece's ratio (plus a quarter);
+            // pieces of other content only grow it.
+            let n = waiting.len();
+            out.reserve(first.0.len() * n + first.0.len() * n / 4 + IDAT_CHUNK);
+        }
+        while let Some(p) = waiting.get_mut(*next).and_then(Option::take) {
+            out.piece(p);
+            *next += 1;
+        }
+    };
     if threads <= 1 {
-        for (i, d) in done.iter_mut().enumerate() {
-            *d = Some(compress(i));
+        for i in 0..pieces.len() {
+            deliver(i, compress(i));
         }
     } else {
         let next = std::sync::atomic::AtomicUsize::new(0);
-        let results = std::sync::Mutex::new(&mut done);
-        std::thread::scope(|scope| {
-            for _ in 0..threads {
-                scope.spawn(|| {
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if i >= pieces.len() {
-                            break;
-                        }
-                        let r = compress(i);
-                        results.lock().expect("no worker panicked")[i] = Some(r);
-                    }
-                });
+        let work = || {
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= pieces.len() {
+                    break;
+                }
+                deliver(i, compress(i));
             }
+        };
+        std::thread::scope(|scope| {
+            // The calling thread works too; a helper the OS refuses (thread
+            // or memory limits) only means fewer helpers, never an error.
+            for _ in 1..threads {
+                if std::thread::Builder::new()
+                    .spawn_scoped(scope, work)
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            work();
         });
     }
-    let done: Vec<_> = done
-        .into_iter()
-        .map(|d| d.expect("every piece compressed"))
-        .collect();
-    let adler = done
-        .iter()
-        .fold(1, |acc, &(_, a, len)| adler32_combine(acc, a, len));
-    let trailer = zlib_trailer(adler);
-    let total: usize = done.iter().map(|d| d.0.len()).sum::<usize>() + trailer.len();
-    let mut out = Vec::with_capacity(total + total.div_ceil(IDAT_CHUNK) * 12 + 64);
-    write_header(&mut out, img.width, img.height, img.format)?;
-    // IDAT chunks of IDAT_CHUNK bytes across the piece boundaries, as the
-    // streaming encoder cuts them.
-    let mut chunk = Vec::with_capacity(IDAT_CHUNK);
-    for mut part in done.iter().map(|d| &d.0[..]).chain([&trailer[..]]) {
+    let st = state.into_inner().expect("no worker panicked");
+    debug_assert_eq!(st.next, pieces.len());
+    st.out.finish()
+}
+
+struct Assembly {
+    out: Assembler,
+    /// Compressed pieces finished before an earlier one.
+    waiting: Vec<Option<(Vec<u8>, u32, u64)>>,
+    next: usize,
+}
+
+/// Writes compressed pieces, in order, as IDAT chunks of IDAT_CHUNK bytes
+/// across the piece boundaries (as the streaming encoder cuts them), and
+/// combines their Adler-32s for the zlib trailer.
+struct Assembler {
+    out: Vec<u8>,
+    chunk: Vec<u8>,
+    adler: u32,
+}
+
+impl Assembler {
+    fn reserve(&mut self, n: usize) {
+        self.out.reserve(n);
+    }
+
+    fn new(out: Vec<u8>) -> Self {
+        Assembler {
+            out,
+            chunk: Vec::with_capacity(IDAT_CHUNK),
+            adler: 1,
+        }
+    }
+
+    fn piece(&mut self, (data, adler, len): (Vec<u8>, u32, u64)) {
+        self.adler = adler32_combine(self.adler, adler, len);
+        self.write(&data);
+    }
+
+    fn write(&mut self, mut part: &[u8]) {
         while !part.is_empty() {
-            let n = (IDAT_CHUNK - chunk.len()).min(part.len());
-            chunk.extend_from_slice(&part[..n]);
+            let n = (IDAT_CHUNK - self.chunk.len()).min(part.len());
+            self.chunk.extend_from_slice(&part[..n]);
             part = &part[n..];
-            if chunk.len() == IDAT_CHUNK {
-                write_chunk(&mut out, b"IDAT", &chunk).map_err(io)?;
-                chunk.clear();
+            if self.chunk.len() == IDAT_CHUNK {
+                write_chunk(&mut self.out, b"IDAT", &self.chunk).expect("Vec write");
+                self.chunk.clear();
             }
         }
     }
-    if !chunk.is_empty() {
-        write_chunk(&mut out, b"IDAT", &chunk).map_err(io)?;
+
+    fn finish(mut self) -> Result<Vec<u8>> {
+        self.write(&zlib_trailer(self.adler));
+        if !self.chunk.is_empty() {
+            write_chunk(&mut self.out, b"IDAT", &self.chunk).map_err(io)?;
+        }
+        write_chunk(&mut self.out, b"IEND", &[]).map_err(io)?;
+        Ok(self.out)
     }
-    write_chunk(&mut out, b"IEND", &[]).map_err(io)?;
-    Ok(out)
 }
 
 /// Raw bytes per sample band, and the number of bands.

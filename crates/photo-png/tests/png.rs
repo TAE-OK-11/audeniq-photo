@@ -317,3 +317,50 @@ fn parallel_pieces_roundtrip_and_are_deterministic() {
         }
     }
 }
+
+/// Gray content stored as RGB (equal channels), many pieces: zlib's own
+/// match finder wins there, the case where earlier streams once leaked into
+/// later ones through reused compressor state.
+fn gray_as_rgb() -> Image {
+    let (w, h) = (3000u32, 2400u32);
+    let mut x32 = 0x1234_5678u32;
+    let mut data = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            x32 ^= x32 << 13;
+            x32 ^= x32 >> 17;
+            x32 ^= x32 << 5;
+            let n = (x32 % 16) as i32 - 8;
+            let r = ((x * 255 / w) as i32 + n).clamp(0, 255);
+            let g = ((y * 255 / h) as i32 + n).clamp(0, 255);
+            let b = ((((x / 37) ^ (y / 53)) % 64) as i32 * 3 + 60 + n).clamp(0, 255);
+            let v = ((r * 299 + g * 587 + b * 114 + 500) / 1000) as u8;
+            data.extend_from_slice(&[v, v, v]);
+        }
+    }
+    Image {
+        width: w,
+        height: h,
+        format: PixelFormat::Rgb8,
+        data,
+    }
+}
+
+#[test]
+fn pieces_do_not_depend_on_earlier_streams() {
+    // Threads reuse their compressor state; a piece must come out the same
+    // whichever thread takes it and whatever that thread compressed before.
+    let fresh = std::thread::spawn(|| encode(&gray_as_rgb(), Level::DEFAULT).unwrap())
+        .join()
+        .unwrap();
+    for round in 0..4 {
+        let reused = std::thread::spawn(|| {
+            encode(&large(true), Level::DEFAULT).unwrap();
+            encode(&large(false), Level::DEFAULT).unwrap();
+            encode(&gray_as_rgb(), Level::DEFAULT).unwrap()
+        })
+        .join()
+        .unwrap();
+        assert!(reused == fresh, "round {round}");
+    }
+}
